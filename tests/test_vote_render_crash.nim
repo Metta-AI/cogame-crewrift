@@ -45,7 +45,6 @@ for tick in 0 ..< 160:
   elif tick == 23:
     inputs[1].attack = false
   for i in 0 ..< game.players.len:
-    discard game.render(i)
     discard game.buildSpriteProtocolPlayerUpdates(
       i,
       playerStates[i],

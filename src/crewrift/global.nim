@@ -21,7 +21,20 @@ const
   ReplayControlsSpriteId = 4003
   ReplayTickObjectId = 4002
   ReplayControlsObjectId = 4003
-  InterstitialSpriteId = 4005
+  ScoreboardWidth = 160
+  ScoreboardHeight = 130
+  ScoreboardY = 2
+  ScoreboardRowHeight = 8
+  ScoreboardPipX = 2
+  ScoreboardPipY = 2
+  ScoreboardPipSize = 4
+  ScoreboardTextX = 8
+  ScoreboardTextSpriteBase = 12000
+  ScoreboardTextObjectBase = 12100
+  ScoreboardPipSpriteBase = 12200
+  ScoreboardPipObjectBase = 12300
+  ScoreboardTextColor = 2'u8
+  ScoreboardSelectedTextColor = 10'u8
   InterstitialObjectId = 4005
   InterstitialLayerId = 2
   InterstitialLayerType = 2
@@ -61,12 +74,25 @@ const
   SpritePlayerProgressSpriteId = 5004
   SpritePlayerArrowSpriteId = 5005
   SpritePlayerInterstitialSpriteId = 5006
+  SpritePlayerWalkabilitySpriteId = 5007
   SpritePlayerInterstitialObjectId = 5006
-  SpritePlayerRemainingObjectId = 5007
-  SpritePlayerProgressObjectId = 5008
-  SpritePlayerShadowSpriteId = 5009
-  SpritePlayerShadowObjectId = 5009
+  SpritePlayerRemainingObjectId = 5008
+  SpritePlayerProgressObjectId = 5009
+  SpritePlayerShadowSpriteId = 5010
+  SpritePlayerShadowObjectId = 5010
   SpritePlayerShadowZ = -32767
+  SpritePlayerVoteCursorSpriteId = 5011
+  SpritePlayerVoteSkipCursorSpriteId = 5012
+  SpritePlayerVoteProgressSpriteId = 5013
+  SpritePlayerVoteChatBgSpriteId = 5014
+  SpritePlayerVoteMarkerSpriteBase = 5020
+  SpritePlayerVoteDotSpriteBase = 5040
+  SpritePlayerVoteCursorObjectId = 10000
+  SpritePlayerVoteSelfMarkerObjectId = 10001
+  SpritePlayerVoteProgressObjectId = 10002
+  SpritePlayerVoteChatBgObjectId = 10003
+  SpritePlayerVoteDotObjectBase = 10100
+  SpritePlayerVoteSkipDotObjectBase = 10400
   SpritePlayerTaskArrowObjectBase = 7000
   ProtocolTextSpriteBase = 9000
   ProtocolTextObjectBase = 9000
@@ -104,12 +130,12 @@ type
     x, y: int
     colorIndex: int
 
-  PlayerTrail = object
+  PlayerTrail = ref object
     joinOrder: int
     lastX, lastY: int
     dots: seq[TrailDot]
 
-  SpriteDefinition = object
+  SpriteDefinition = ref object
     spriteId: int
     width: int
     height: int
@@ -125,18 +151,21 @@ type
     mouseDown*: bool
     selectedJoinOrder*: int
     clickPending*: bool
+    povActive*: bool
+    povJoinOrder*: int
+    povState*: PlayerViewerState
     scrubbingReplay*: bool
     replaySeekTick*: int
     replayCommands*: seq[char]
     trails: seq[PlayerTrail]
     spriteDefs: seq[SpriteDefinition]
 
-  PlayerViewerState* = object
+  PlayerViewerState* = ref object
     initialized*: bool
     objectIds*: seq[int]
     spriteDefs: seq[SpriteDefinition]
 
-  ProtocolTextItem = object
+  ProtocolTextItem = ref object
     spriteId: int
     objectId: int
     x, y, z: int
@@ -151,12 +180,14 @@ proc initGlobalViewerState*(): GlobalViewerState =
   ## Returns the default state for one global protocol viewer.
   result.mouseLayer = MapLayerId
   result.selectedJoinOrder = -1
+  result.povJoinOrder = -1
+  new(result.povState)
   result.replaySeekTick = -1
   result.replayCommands = @[]
 
 proc initPlayerViewerState*(): PlayerViewerState =
   ## Returns the default state for one sprite player viewer.
-  discard
+  new(result)
 
 proc putRgbaPixel(pixels: var seq[uint8], pixelIndex: int, color: uint8) =
   ## Writes one palette color as a global protocol RGBA pixel.
@@ -522,6 +553,54 @@ proc buildSolidSprite(
   for i in 0 ..< width * height:
     result.putRgbaPixel(i, color)
 
+proc buildIndexedSpritePixels(
+  indices: openArray[uint8],
+  width,
+  height: int,
+  fallback: uint8
+): seq[uint8] {.measure.} =
+  ## Builds an RGBA sprite from palette indices.
+  result = newRgbaPixels(width, height)
+  for i in 0 ..< width * height:
+    let color =
+      if i < indices.len:
+        indices[i]
+      else:
+        fallback
+    result.putRgbaPixel(i, color)
+
+proc buildVoteBorderSprite(width, height: int): seq[uint8] {.measure.} =
+  ## Builds a single-color voting cursor border sprite.
+  result = newRgbaPixels(width, height)
+  if width <= 0 or height <= 0:
+    return
+  for x in 0 ..< width:
+    result.putRgbaPixel(x, 2'u8)
+    result.putRgbaPixel((height - 1) * width + x, 2'u8)
+  for y in 0 ..< height:
+    result.putRgbaPixel(y * width, 2'u8)
+    result.putRgbaPixel(y * width + width - 1, 2'u8)
+
+proc buildVoteMarkerSprite(color: uint8): seq[uint8] {.measure.} =
+  ## Builds the current-voter marker sprite.
+  result = newRgbaPixels(2, 1)
+  if color == SpaceColor:
+    result.putRgbaPixel(0, 2'u8)
+    result.putRgbaPixel(1, 12'u8)
+  else:
+    result.putRgbaPixel(0, color)
+    result.putRgbaPixel(1, color)
+
+proc buildVoteDotSprite(color: uint8): seq[uint8] {.measure.} =
+  ## Builds a compact vote marker sprite.
+  result = newRgbaPixels(2, 1)
+  if color == SpaceColor:
+    result.putRgbaPixel(0, 12'u8)
+    result.putRgbaPixel(1, 2'u8)
+  else:
+    result.putRgbaPixel(0, color)
+    result.putRgbaPixel(1, color)
+
 proc buildImposterBarSprite(
   cooldown, maxCooldown: int
 ): seq[uint8] {.measure.} =
@@ -553,6 +632,24 @@ proc buildMapSpritePixels(sim: SimServer): seq[uint8] {.measure.} =
   result = newRgbaPixels(sim.gameMap.width, sim.gameMap.height)
   for i in 0 ..< sim.mapPixels.len:
     result.putRgbaPixel(i, sim.mapPixels[i])
+
+proc buildWalkabilitySpritePixels(sim: SimServer): seq[uint8] {.measure.} =
+  ## Returns a binary RGBA walkability mask for sprite agents.
+  result = newSeq[uint8](sim.gameMap.width * sim.gameMap.height * 4)
+  for i in 0 ..< sim.gameMap.width * sim.gameMap.height:
+    let offset = i * 4
+    let walkable =
+      if i < sim.walkMask.len:
+        sim.walkMask[i]
+      elif i < sim.wallMask.len:
+        not sim.wallMask[i]
+      else:
+        true
+    if walkable:
+      result[offset] = 255
+      result[offset + 1] = 255
+      result[offset + 2] = 255
+      result[offset + 3] = 255
 
 proc buildPlayerShadowSprite(
   sim: SimServer,
@@ -923,41 +1020,39 @@ proc addProtocolChatSprites(
     skipY = startY + rows * cellH + 1
   sim.addVisibleVoteChatIcons(currentIds, packet, layer, skipY + 10)
 
-proc putProtocolVoteDot(fb: var Framebuffer, x, y: int, color: uint8) =
-  ## Draws one vote marker into a sprite protocol voting background.
-  if color == SpaceColor:
-    fb.putPixel(x - 1, y, 12'u8)
-    fb.putPixel(x, y, 2'u8)
-  else:
-    fb.putPixel(x, y, color)
+proc buildVoteProgressSprite(sim: SimServer): seq[uint8] {.measure.} =
+  ## Builds the voting countdown bar as a small sprite.
+  const
+    BarW = ScreenWidth - 4
+    BarH = 2
+  result = newRgbaPixels(BarW, BarH)
+  let filled =
+    if sim.config.voteTimerTicks > 0:
+      clamp(
+        sim.voteState.voteTimer * BarW div sim.config.voteTimerTicks,
+        0,
+        BarW
+      )
+    else:
+      0
+  for y in 0 ..< BarH:
+    for x in 0 ..< BarW:
+      result.putRgbaPixel(y * BarW + x, if x < filled: 10'u8 else: 1'u8)
 
-proc putProtocolSelfMarker(fb: var Framebuffer, x, y: int, color: uint8) =
-  ## Draws the local voter marker into a sprite protocol voting background.
-  if color == SpaceColor:
-    fb.putPixel(x, y, 2'u8)
-    fb.putPixel(x + 1, y, 12'u8)
-  else:
-    fb.putPixel(x, y, color)
-    fb.putPixel(x + 1, y, color)
-
-proc buildSpriteProtocolBlankFrame(sim: SimServer): seq[uint8] {.measure.} =
-  ## Builds a packed blank frame for sprite protocol interstitials.
-  var fb = initFramebuffer()
-  sim.fillDarkBg(fb)
-  fb.packFramebuffer()
-  fb.packed
-
-proc buildSpriteProtocolVoteFrame(
+proc addProtocolVoteUiSprites(
   sim: SimServer,
+  spriteDefs: var seq[SpriteDefinition],
+  currentIds: var seq[int],
+  packet: var seq[uint8],
+  layer,
   playerIndex: int
-): seq[uint8] {.measure.} =
-  ## Builds a voting background without baked text or player icons.
-  var fb = initFramebuffer()
-  sim.fillDarkBg(fb)
+) {.measure.} =
+  ## Adds cursor, vote dots, chat background, and timer sprites.
+  if sim.phase != Voting:
+    return
   let n = sim.players.len
   if n == 0:
-    fb.packFramebuffer()
-    return fb.packed
+    return
   let
     cellW = 16
     cellH = 17
@@ -966,78 +1061,126 @@ proc buildSpriteProtocolVoteFrame(
     totalW = cols * cellW
     startX = (ScreenWidth - totalW) div 2
     startY = 2
-
-  for idx in 0 ..< n:
-    let
-      pi = idx
-      col = idx mod cols
-      row = idx div cols
-      cx = startX + col * cellW
-      cy = startY + row * cellH
-    if pi == playerIndex:
-      fb.putProtocolSelfMarker(
-        cx + cellW div 2 - 1,
-        cy - 2,
-        sim.players[pi].color
-      )
-    if sim.players[pi].alive and
-        playerIndex >= 0 and playerIndex < sim.voteState.cursor.len and
-        sim.voteState.cursor[playerIndex] == pi:
-      for bx in 0 ..< cellW:
-        fb.putPixel(cx + bx, cy - 1, 2'u8)
-        fb.putPixel(cx + bx, cy + cellH - 2, 2'u8)
-      for by in 0 ..< cellH:
-        fb.putPixel(cx, cy + by - 1, 2'u8)
-        fb.putPixel(cx + cellW - 1, cy + by - 1, 2'u8)
-    var voterRow = 0
-    for vi in 0 ..< n:
-      if sim.voteState.votes[vi] == pi:
-        let
-          dotX = cx + 1 + (voterRow mod 8) * 2
-          dotY = cy + SpriteSize + 2 + (voterRow div 8)
-        fb.putProtocolVoteDot(dotX, dotY, sim.players[vi].color)
-        inc voterRow
-
-  let
     skipY = startY + rows * cellH + 1
     skipW = 28
     skipX = (ScreenWidth - skipW) div 2
-  if playerIndex >= 0 and playerIndex < sim.voteState.cursor.len and
-      sim.voteState.cursor[playerIndex] == n:
-    for bx in 0 ..< skipW:
-      fb.putPixel(skipX + bx, skipY - 1, 2'u8)
-      fb.putPixel(skipX + bx, skipY + 6, 2'u8)
-    for by in 0 ..< 8:
-      fb.putPixel(skipX - 1, skipY + by - 1, 2'u8)
-      fb.putPixel(skipX + skipW, skipY + by - 1, 2'u8)
+  if playerIndex >= 0 and playerIndex < sim.voteState.cursor.len:
+    let cursor = sim.voteState.cursor[playerIndex]
+    if cursor >= 0 and cursor < n:
+      let
+        cx = startX + (cursor mod cols) * cellW
+        cy = startY + (cursor div cols) * cellH
+      currentIds.add(SpritePlayerVoteCursorObjectId)
+      packet.addObject(
+        SpritePlayerVoteCursorObjectId,
+        cx,
+        cy - 1,
+        ProtocolVoteIconZ - 1,
+        layer,
+        SpritePlayerVoteCursorSpriteId
+      )
+    elif cursor == n:
+      currentIds.add(SpritePlayerVoteCursorObjectId)
+      packet.addObject(
+        SpritePlayerVoteCursorObjectId,
+        skipX - 1,
+        skipY - 1,
+        ProtocolVoteIconZ - 1,
+        layer,
+        SpritePlayerVoteSkipCursorSpriteId
+      )
+    let
+      cx = startX + (playerIndex mod cols) * cellW
+      cy = startY + (playerIndex div cols) * cellH
+      colorIndex = playerColorIndex(sim.players[playerIndex].color)
+    currentIds.add(SpritePlayerVoteSelfMarkerObjectId)
+    packet.addObject(
+      SpritePlayerVoteSelfMarkerObjectId,
+      cx + cellW div 2 - 1,
+      cy - 2,
+      ProtocolVoteIconZ + 1,
+      layer,
+      SpritePlayerVoteMarkerSpriteBase + colorIndex
+    )
+  for target in 0 ..< n:
+    let
+      cx = startX + (target mod cols) * cellW
+      cy = startY + (target div cols) * cellH
+    var voterRow = 0
+    for voter in 0 ..< n:
+      if sim.voteState.votes[voter] == target:
+        let
+          dotX = cx + 1 + (voterRow mod 8) * 2
+          dotY = cy + SpriteSize + 2 + (voterRow div 8)
+          objectId = SpritePlayerVoteDotObjectBase + target * MaxPlayers +
+            voter
+          colorIndex = playerColorIndex(sim.players[voter].color)
+        currentIds.add(objectId)
+        packet.addObject(
+          objectId,
+          dotX,
+          dotY,
+          ProtocolVoteIconZ + 1,
+          layer,
+          SpritePlayerVoteDotSpriteBase + colorIndex
+        )
+        inc voterRow
   var skipVoterRow = 0
-  for vi in 0 ..< n:
-    if sim.voteState.votes[vi] == -2:
+  for voter in 0 ..< n:
+    if sim.voteState.votes[voter] == -2:
       let
         dotX = skipX + skipW + 2 + (skipVoterRow mod 8) * 2
         dotY = skipY + (skipVoterRow div 8)
-      fb.putProtocolVoteDot(dotX, dotY, sim.players[vi].color)
+        objectId = SpritePlayerVoteSkipDotObjectBase + voter
+        colorIndex = playerColorIndex(sim.players[voter].color)
+      currentIds.add(objectId)
+      packet.addObject(
+        objectId,
+        dotX,
+        dotY,
+        ProtocolVoteIconZ + 1,
+        layer,
+        SpritePlayerVoteDotSpriteBase + colorIndex
+      )
       inc skipVoterRow
-
   let
-    chatX = 0
     chatY = skipY + 10
-    chatW = ScreenWidth
     chatH = ScreenHeight - chatY - 3
   if chatH > 0:
-    fb.fillRect(chatX, chatY, chatW, chatH, 0)
-
-  let
-    barY = ScreenHeight - 2
-    barW = ScreenWidth - 4
-    filled = sim.voteState.voteTimer * barW div sim.config.voteTimerTicks
-  for bx in 0 ..< barW:
-    let c = if bx < filled: 10'u8 else: 1'u8
-    fb.putPixel(2 + bx, barY, c)
-    fb.putPixel(2 + bx, barY + 1, c)
-
-  fb.packFramebuffer()
-  fb.packed
+    currentIds.add(SpritePlayerVoteChatBgObjectId)
+    packet.addSpriteChanged(
+      spriteDefs,
+      SpritePlayerVoteChatBgSpriteId,
+      ScreenWidth,
+      chatH,
+      buildSolidSprite(ScreenWidth, chatH, 0'u8),
+      "vote chat background"
+    )
+    packet.addObject(
+      SpritePlayerVoteChatBgObjectId,
+      0,
+      chatY,
+      ProtocolVoteIconZ - 2,
+      layer,
+      SpritePlayerVoteChatBgSpriteId
+    )
+  currentIds.add(SpritePlayerVoteProgressObjectId)
+  packet.addSpriteChanged(
+    spriteDefs,
+    SpritePlayerVoteProgressSpriteId,
+    ScreenWidth - 4,
+    2,
+    sim.buildVoteProgressSprite(),
+    "vote timer"
+  )
+  packet.addObject(
+    SpritePlayerVoteProgressObjectId,
+    2,
+    ScreenHeight - 2,
+    ProtocolVoteIconZ + 2,
+    layer,
+    SpritePlayerVoteProgressSpriteId
+  )
 
 proc addProtocolVoteActorSprites(
   sim: SimServer,
@@ -1224,6 +1367,7 @@ proc addProtocolGameOverActorSprites(
 
 proc addProtocolInterstitialActorSprites(
   sim: SimServer,
+  spriteDefs: var seq[SpriteDefinition],
   currentIds: var seq[int],
   packet: var seq[uint8],
   layer, playerIndex: int
@@ -1240,6 +1384,13 @@ proc addProtocolInterstitialActorSprites(
       playerIndex
     )
   of Voting:
+    sim.addProtocolVoteUiSprites(
+      spriteDefs,
+      currentIds,
+      packet,
+      layer,
+      playerIndex
+    )
     sim.addProtocolVoteActorSprites(currentIds, packet, layer)
     sim.addProtocolChatSprites(currentIds, packet, layer)
   of VoteResult:
@@ -1249,50 +1400,62 @@ proc addProtocolInterstitialActorSprites(
   else:
     discard
 
-proc spritePixelsFromPackedFrame(
-  packed: openArray[uint8]
-): seq[uint8] {.measure.} =
-  ## Converts a packed Bitworld frame into protocol sprite pixels.
-  result = newRgbaPixels(ScreenWidth, ScreenHeight)
-  var j = 0
-  for byte in packed:
-    result.putRgbaPixel(j, byte and 0x0f)
-    inc j
-    result.putRgbaPixel(j, (byte shr 4) and 0x0f)
-    inc j
-
 proc hasInterstitialFrame(sim: SimServer): bool =
   ## Returns true when the global viewer should show a neutral game screen.
   sim.phase in {Lobby, Voting, VoteResult, GameOver}
 
-proc buildInterstitialFrame(
-  sim: var SimServer,
-  includeText = true
-): seq[uint8] =
-  ## Builds a neutral global-view interstitial frame.
-  case sim.phase
-  of Lobby:
-    if includeText:
-      sim.buildLobbyFrame(-1)
-    else:
-      sim.buildSpriteProtocolBlankFrame()
-  of Voting:
-    if includeText:
-      sim.buildVoteFrame(-1)
-    else:
-      sim.buildSpriteProtocolVoteFrame(-1)
-  of VoteResult:
-    if includeText:
-      sim.buildResultFrame(-1)
-    else:
-      sim.buildSpriteProtocolBlankFrame()
-  of GameOver:
-    if includeText:
-      sim.buildGameOverFrame(-1)
-    else:
-      sim.buildSpriteProtocolBlankFrame()
-  else:
-    @[]
+proc addSpriteProtocolInterstitialSprites(
+  sim: SimServer,
+  spriteDefs: var seq[SpriteDefinition],
+  packet: var seq[uint8]
+) {.measure.} =
+  ## Adds reusable sprites for non-playing screens.
+  packet.addSpriteChanged(
+    spriteDefs,
+    SpritePlayerInterstitialSpriteId,
+    ScreenWidth,
+    ScreenHeight,
+    buildIndexedSpritePixels(
+      sim.darkBgPixels,
+      ScreenWidth,
+      ScreenHeight,
+      SpaceColor
+    ),
+    "interstitial background"
+  )
+  packet.addSpriteChanged(
+    spriteDefs,
+    SpritePlayerVoteCursorSpriteId,
+    16,
+    17,
+    buildVoteBorderSprite(16, 17),
+    "vote cursor"
+  )
+  packet.addSpriteChanged(
+    spriteDefs,
+    SpritePlayerVoteSkipCursorSpriteId,
+    30,
+    8,
+    buildVoteBorderSprite(30, 8),
+    "vote skip cursor"
+  )
+  for i in 0 ..< PlayerColors.len:
+    packet.addSpriteChanged(
+      spriteDefs,
+      SpritePlayerVoteMarkerSpriteBase + i,
+      2,
+      1,
+      buildVoteMarkerSprite(PlayerColors[i]),
+      "vote self marker " & playerColorName(i)
+    )
+    packet.addSpriteChanged(
+      spriteDefs,
+      SpritePlayerVoteDotSpriteBase + i,
+      2,
+      1,
+      buildVoteDotSprite(PlayerColors[i]),
+      "vote dot " & playerColorName(i)
+    )
 
 proc buildSpriteProtocolInit(
   sim: SimServer,
@@ -1300,11 +1463,12 @@ proc buildSpriteProtocolInit(
 ): seq[uint8] {.measure.} =
   ## Builds the initial global viewer snapshot.
   result = @[]
+  result.addU8(0x04)
   let mapPixels = sim.buildMapSpritePixels()
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
   result.addViewport(MapLayerId, sim.gameMap.width, sim.gameMap.height)
   result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
-  result.addViewport(TopLeftLayerId, 160, 24)
+  result.addViewport(TopLeftLayerId, ScoreboardWidth, ScoreboardHeight)
   result.addLayer(InterstitialLayerId, InterstitialLayerType, UiLayerFlag)
   result.addViewport(InterstitialLayerId, ScreenWidth, ScreenHeight)
   result.addLayer(BottomRightLayerId, BottomRightLayerType, UiLayerFlag)
@@ -1336,6 +1500,7 @@ proc buildSpriteProtocolInit(
       buildTrailDotSprite(PlayerColors[i]),
       "trail " & playerColorName(i)
     )
+  sim.addSpriteProtocolInterstitialSprites(spriteDefs, result)
   for i in 0 ..< PlayerColors.len:
     let
       playerRight = buildSpriteProtocolActorSprite(
@@ -1479,6 +1644,14 @@ proc buildSpriteProtocolPlayerInit(
   )
   result.addSpriteChanged(
     spriteDefs,
+    SpritePlayerWalkabilitySpriteId,
+    sim.gameMap.width,
+    sim.gameMap.height,
+    sim.buildWalkabilitySpritePixels(),
+    "walkability map"
+  )
+  result.addSpriteChanged(
+    spriteDefs,
     TaskSpriteId,
     sim.taskIconSprite.width,
     sim.taskIconSprite.height,
@@ -1517,6 +1690,7 @@ proc buildSpriteProtocolPlayerInit(
     buildSolidSprite(1, 1, 8'u8),
     "task arrow"
   )
+  sim.addSpriteProtocolInterstitialSprites(spriteDefs, result)
   for i in 0 ..< PlayerColors.len:
     let
       playerRight = buildSpriteProtocolActorSprite(
@@ -1611,6 +1785,137 @@ proc playerLabelText(player: Player): string =
     result = "?"
   if result.len > PlayerNameMaxChars:
     result.setLen(PlayerNameMaxChars)
+
+proc scoreboardPipObjectId(row: int): int =
+  ## Returns the stable score pip object id for one row.
+  ScoreboardPipObjectBase + row
+
+proc scoreboardTextObjectId(row: int): int =
+  ## Returns the stable score text object id for one row.
+  ScoreboardTextObjectBase + row
+
+proc scoreboardTextSpriteId(row: int): int =
+  ## Returns the stable score text sprite id for one row.
+  ScoreboardTextSpriteBase + row
+
+proc scoreboardPipSpriteId(colorIndex: int): int =
+  ## Returns the stable score pip sprite id for one color.
+  ScoreboardPipSpriteBase + colorIndex
+
+proc scoreboardRoleTag(player: Player): string =
+  ## Returns the compact scoreboard role tag for one player.
+  case player.role
+  of Crewmate:
+    "crew"
+  of Imposter:
+    "imp"
+
+proc scoreboardName(player: Player): string =
+  ## Returns the clickable scoreboard player label.
+  player.playerLabelText() & " (" & player.scoreboardRoleTag() & ")"
+
+proc scoreboardText(player: Player): string =
+  ## Returns one compact scoreboard row.
+  player.scoreboardName() & " " & $player.reward
+
+proc scoreboardJoinOrderAt(
+  sim: SimServer,
+  layer,
+  mouseX,
+  mouseY: int
+): int =
+  ## Returns the join order for a clicked scoreboard name.
+  if layer != TopLeftLayerId:
+    return -1
+  let row = (mouseY - ScoreboardY) div ScoreboardRowHeight
+  if row < 0 or row >= sim.players.len:
+    return -1
+  let
+    player = sim.players[row]
+    name = player.scoreboardName()
+    rowY = ScoreboardY + row * ScoreboardRowHeight
+    nameWidth = sim.asciiSprites.textWidth(name)
+  if mouseY < rowY or mouseY >= rowY + TextLineHeight:
+    return -1
+  if mouseX < ScoreboardTextX or
+      mouseX >= ScoreboardTextX + nameWidth:
+    return -1
+  player.joinOrder
+
+proc toggleSelectedJoinOrder(
+  state: var GlobalViewerState,
+  joinOrder: int
+) =
+  ## Selects or clears the current point-of-view join order.
+  if joinOrder < 0:
+    state.selectedJoinOrder = -1
+  elif state.selectedJoinOrder == joinOrder:
+    state.selectedJoinOrder = -1
+  else:
+    state.selectedJoinOrder = joinOrder
+
+proc addScoreboard(
+  sim: SimServer,
+  spriteDefs: var seq[SpriteDefinition],
+  currentIds: var seq[int],
+  packet: var seq[uint8],
+  selectedJoinOrder: int
+) {.measure.} =
+  ## Adds the top-left player score picker.
+  packet.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
+  packet.addViewport(TopLeftLayerId, ScoreboardWidth, ScoreboardHeight)
+  for i in 0 ..< sim.players.len:
+    let
+      player = sim.players[i]
+      colorIndex = playerColorIndex(player.color)
+      pipSpriteId = scoreboardPipSpriteId(colorIndex)
+      pipObjectId = scoreboardPipObjectId(i)
+      textSpriteId = scoreboardTextSpriteId(i)
+      textObjectId = scoreboardTextObjectId(i)
+      rowY = ScoreboardY + i * ScoreboardRowHeight
+      color =
+        if player.joinOrder == selectedJoinOrder:
+          ScoreboardSelectedTextColor
+        else:
+          ScoreboardTextColor
+      text = sim.buildSpriteProtocolTextSprite(
+        [player.scoreboardText()],
+        color
+      )
+    currentIds.add(pipObjectId)
+    currentIds.add(textObjectId)
+    packet.addSpriteChanged(
+      spriteDefs,
+      pipSpriteId,
+      ScoreboardPipSize,
+      ScoreboardPipSize,
+      buildSolidSprite(ScoreboardPipSize, ScoreboardPipSize, player.color),
+      "score pip " & playerColorName(colorIndex)
+    )
+    packet.addObject(
+      pipObjectId,
+      ScoreboardPipX,
+      ScoreboardPipY + i * ScoreboardRowHeight,
+      0,
+      TopLeftLayerId,
+      pipSpriteId
+    )
+    packet.addSpriteChanged(
+      spriteDefs,
+      textSpriteId,
+      text.width,
+      text.height,
+      text.pixels,
+      "score " & player.playerLabelText()
+    )
+    packet.addObject(
+      textObjectId,
+      ScoreboardTextX,
+      rowY,
+      0,
+      TopLeftLayerId,
+      textSpriteId
+    )
 
 proc voteLabelLine(sim: SimServer, playerIndex: int): string =
   ## Returns the vote indicator line for one player during a vote.
@@ -1784,14 +2089,6 @@ proc selectedPlayerIndex(
       return i
   -1
 
-proc roleName(role: PlayerRole): string =
-  ## Returns a display name for a player role.
-  case role
-  of Crewmate:
-    return "CREWMATE"
-  of Imposter:
-    return "IMPOSTER"
-
 proc buildTaskProgressSprite(progress, total: int): seq[uint8] {.measure.} =
   ## Builds the one-pixel high task progress bar sprite.
   result = newRgbaPixels(TaskBarWidth, 1)
@@ -1886,7 +2183,11 @@ proc buildSpriteProtocolPlayerUpdates*(
 ): seq[uint8] {.measure.} =
   ## Builds sprite protocol updates for one playable player view.
   result = @[]
-  nextState = state
+  nextState =
+    if state.isNil:
+      initPlayerViewerState()
+    else:
+      state
   if not nextState.initialized:
     result = sim.buildSpriteProtocolPlayerInit(nextState.spriteDefs)
     nextState.initialized = true
@@ -1894,28 +2195,7 @@ proc buildSpriteProtocolPlayerUpdates*(
   var currentIds: seq[int] = @[]
   if sim.phase != Playing or playerIndex < 0 or
       playerIndex >= sim.players.len:
-    let packedFrame =
-      if sim.phase == Playing and
-          (playerIndex < 0 or playerIndex >= sim.players.len):
-        sim.buildSpriteProtocolBlankFrame()
-      elif sim.phase in {Lobby, RoleReveal}:
-        sim.buildSpriteProtocolBlankFrame()
-      elif sim.phase == Voting:
-        sim.buildSpriteProtocolVoteFrame(playerIndex)
-      elif sim.phase in {VoteResult, GameOver}:
-        sim.buildSpriteProtocolBlankFrame()
-      else:
-        sim.render(playerIndex)
-    let interstitial = spritePixelsFromPackedFrame(packedFrame)
     currentIds.add(SpritePlayerInterstitialObjectId)
-    result.addSpriteChanged(
-      nextState.spriteDefs,
-      SpritePlayerInterstitialSpriteId,
-      ScreenWidth,
-      ScreenHeight,
-      interstitial,
-      "player screen"
-    )
     result.addObject(
       SpritePlayerInterstitialObjectId,
       0,
@@ -1932,6 +2212,7 @@ proc buildSpriteProtocolPlayerUpdates*(
       playerIndex
     )
     sim.addProtocolInterstitialActorSprites(
+      nextState.spriteDefs,
       currentIds,
       result,
       MapLayerId,
@@ -2338,29 +2619,39 @@ proc buildSpriteProtocolUpdates*(
   nextState.replayCommands.setLen(0)
   nextState.replaySeekTick = -1
   if nextState.clickPending:
-    let seekTick = replayScrubTickAt(
+    let scoreJoinOrder = sim.scoreboardJoinOrderAt(
       nextState.mouseLayer,
       nextState.mouseX,
-      nextState.mouseY,
-      replayMaxTick
+      nextState.mouseY
     )
-    if replayEnabled and replayTick >= 0 and seekTick >= 0:
-      nextState.scrubbingReplay = true
-      nextState.replaySeekTick = seekTick
-    elif replayTick >= 0:
-      let command = replayCommandAt(
+    if scoreJoinOrder >= 0:
+      nextState.toggleSelectedJoinOrder(scoreJoinOrder)
+    else:
+      let seekTick = replayScrubTickAt(
         nextState.mouseLayer,
         nextState.mouseX,
-        nextState.mouseY
+        nextState.mouseY,
+        replayMaxTick
       )
-      if command != '\0':
-        nextState.replayCommands.add(command)
-      elif nextState.mouseLayer == MapLayerId:
-        nextState.selectedJoinOrder =
+      if replayEnabled and replayTick >= 0 and seekTick >= 0:
+        nextState.scrubbingReplay = true
+        nextState.replaySeekTick = seekTick
+      elif replayTick >= 0:
+        let command = replayCommandAt(
+          nextState.mouseLayer,
+          nextState.mouseX,
+          nextState.mouseY
+        )
+        if command != '\0':
+          nextState.replayCommands.add(command)
+        elif not nextState.povActive and nextState.mouseLayer == MapLayerId:
+          nextState.toggleSelectedJoinOrder(
+            sim.selectSpritePlayer(nextState.mouseX, nextState.mouseY)
+          )
+      elif not nextState.povActive and nextState.mouseLayer == MapLayerId:
+        nextState.toggleSelectedJoinOrder(
           sim.selectSpritePlayer(nextState.mouseX, nextState.mouseY)
-    elif nextState.mouseLayer == MapLayerId:
-      nextState.selectedJoinOrder =
-        sim.selectSpritePlayer(nextState.mouseX, nextState.mouseY)
+        )
     nextState.clickPending = false
   if replayEnabled and replayTick >= 0 and nextState.mouseDown and
       nextState.scrubbingReplay:
@@ -2372,6 +2663,40 @@ proc buildSpriteProtocolUpdates*(
     )
     if seekTick >= 0:
       nextState.replaySeekTick = seekTick
+  let playerIndex = sim.selectedPlayerIndex(nextState.selectedJoinOrder)
+  if playerIndex < 0:
+    nextState.selectedJoinOrder = -1
+  let
+    povActive = playerIndex >= 0
+    povChanged = povActive != state.povActive or
+      nextState.selectedJoinOrder != state.povJoinOrder
+  if povChanged:
+    nextState.objectIds.setLen(0)
+    nextState.povState = initPlayerViewerState()
+    if not povActive:
+      nextState.initialized = false
+  nextState.povActive = povActive
+  nextState.povJoinOrder = nextState.selectedJoinOrder
+  if povActive:
+    var povState: PlayerViewerState
+    result = sim.buildSpriteProtocolPlayerUpdates(
+      playerIndex,
+      nextState.povState,
+      povState
+    )
+    nextState.povState = povState
+    var currentIds: seq[int] = @[]
+    sim.addScoreboard(
+      nextState.spriteDefs,
+      currentIds,
+      result,
+      nextState.selectedJoinOrder
+    )
+    for objectId in state.objectIds:
+      if objectId notin currentIds:
+        result.addDeleteObject(objectId)
+    nextState.objectIds = currentIds
+    return
   if not nextState.initialized:
     result = sim.buildSpriteProtocolInit(nextState.spriteDefs)
     result.addLayer(
@@ -2390,6 +2715,12 @@ proc buildSpriteProtocolUpdates*(
 
   nextState.updateTrails(sim)
   var currentIds: seq[int] = @[]
+  sim.addScoreboard(
+    nextState.spriteDefs,
+    currentIds,
+    result,
+    nextState.selectedJoinOrder
+  )
   for trail in nextState.trails:
     for i in 0 ..< trail.dots.len:
       let
@@ -2506,25 +2837,14 @@ proc buildSpriteProtocolUpdates*(
       )
 
   if sim.hasInterstitialFrame():
-    let interstitial = spritePixelsFromPackedFrame(
-      sim.buildInterstitialFrame(false)
-    )
     currentIds.add(InterstitialObjectId)
-    result.addSpriteChanged(
-      nextState.spriteDefs,
-      InterstitialSpriteId,
-      ScreenWidth,
-      ScreenHeight,
-      interstitial,
-      "interstitial screen"
-    )
     result.addObject(
       InterstitialObjectId,
       0,
       0,
       0,
       InterstitialLayerId,
-      InterstitialSpriteId
+      SpritePlayerInterstitialSpriteId
     )
     sim.addProtocolTextSprites(
       nextState.spriteDefs,
@@ -2534,59 +2854,11 @@ proc buildSpriteProtocolUpdates*(
       -1
     )
     sim.addProtocolInterstitialActorSprites(
+      nextState.spriteDefs,
       currentIds,
       result,
       InterstitialLayerId,
       -1
-    )
-
-  let playerIndex = sim.selectedPlayerIndex(nextState.selectedJoinOrder)
-  if playerIndex >= 0:
-    let
-      player = sim.players[playerIndex]
-      text = sim.buildSpriteProtocolTextSprite(
-        [
-          "ADDRESS " & player.address,
-          "ROLE " & roleName(player.role)
-        ],
-        2'u8
-      )
-      viewport = spritePixelsFromPackedFrame(
-        sim.render(playerIndex)
-      )
-    currentIds.add(SelectedTextObjectId)
-    currentIds.add(SelectedViewportObjectId)
-    result.addSpriteChanged(
-      nextState.spriteDefs,
-      SelectedTextSpriteId,
-      text.width,
-      text.height,
-      text.pixels,
-      "selected player info"
-    )
-    result.addObject(
-      SelectedTextObjectId,
-      2,
-      2,
-      0,
-      TopLeftLayerId,
-      SelectedTextSpriteId
-    )
-    result.addSpriteChanged(
-      nextState.spriteDefs,
-      SelectedViewportSpriteId,
-      ScreenWidth,
-      ScreenHeight,
-      viewport,
-      "selected player viewport"
-    )
-    result.addObject(
-      SelectedViewportObjectId,
-      0,
-      0,
-      0,
-      BottomRightLayerId,
-      SelectedViewportSpriteId
     )
 
   let

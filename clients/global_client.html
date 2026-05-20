@@ -447,6 +447,11 @@ function maybeFit(){
   else applyView();
 }
 
+function recenter(){
+  autoFit=true;
+  fit();
+}
+
 function clearBlack(){
   ctx.fillStyle="#000";
   ctx.fillRect(0,0,canvas.width,canvas.height);
@@ -713,12 +718,15 @@ function defineLayer(id,type,flags){
 
 function setViewport(layerId,width,height){
   const layer=ensureLayer(layerId);
+  const mainLayer=(layer.flags&ZoomableFlag)!==0||layer.type===MapLayerType;
+  const sizeChanged=layer.width!==width||layer.height!==height;
   layer.width=width;
   layer.height=height;
   layer.canvas.width=width;
   layer.canvas.height=height;
   layer.image=layer.ctx.createImageData(width,height);
-  maybeFit();
+  if(mainLayer&&sizeChanged)recenter();
+  else maybeFit();
 }
 
 function putSpritePixel(layer,x,y,sprite,srcOffset){
@@ -973,10 +981,7 @@ addEventListener("pointerup",event=>{
   activeMouseLayer=null;
   try{canvas.releasePointerCapture(event.pointerId)}catch(e){}
 });
-addEventListener("dblclick",()=>{
-  autoFit=true;
-  fit();
-});
+addEventListener("dblclick",recenter);
 for(const eventName of ["pointerdown","pointermove","pointerup","dblclick"]){
   debugPanel.addEventListener(eventName,event=>event.stopPropagation());
 }

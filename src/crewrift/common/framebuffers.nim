@@ -15,7 +15,6 @@ type
 
   Framebuffer* = object
     indices*: seq[uint8]
-    packed*: seq[uint8]
 
 const
   TransparentColorIndex* = 255'u8
@@ -96,7 +95,6 @@ proc readRequiredSprite*(path: string): Sprite =
 
 proc initFramebuffer*(): Framebuffer =
   result.indices = newSeq[uint8](ScreenWidth * ScreenHeight)
-  result.packed = newSeq[uint8](ProtocolBytes)
 
 proc clearFrame*(fb: var Framebuffer, bg: uint8 = 3) =
   for i in 0 ..< fb.indices.len:
@@ -206,9 +204,3 @@ proc blitTextTinted*(fb: var Framebuffer, letterSprites: seq[Sprite], digitSprit
       if idx >= 0 and idx < letterSprites.len:
         fb.blitSpriteTinted(letterSprites[idx], screenX + offsetX, screenY, 0, 0, tint)
     offsetX += 6
-
-proc packFramebuffer*(fb: var Framebuffer) =
-  for i in 0 ..< fb.packed.len:
-    let lo = fb.indices[i * 2] and 0x0F
-    let hi = fb.indices[i * 2 + 1] and 0x0F
-    fb.packed[i] = lo or (hi shl 4)

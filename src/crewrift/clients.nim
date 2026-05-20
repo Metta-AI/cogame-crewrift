@@ -25,8 +25,8 @@ const
   CoworldRewardClientRoute* = "/clients/rewards"
   CoworldSnappyClientRoute* = "/clients/snappyjs.min.js"
   CoworldQrcodeClientRoute* = "/clients/qrcode.min.js"
-  PlayerClientHtml* = "player_client.html"
   GlobalClientHtml* = "global_client.html"
+  PlayerClientHtml* = GlobalClientHtml
   AdminClientHtml* = "admin_client.html"
   RewardClientHtml* = "reward_client.html"
   SnappyClientJs* = "snappyjs.min.js"

@@ -325,7 +325,7 @@
     "protocols": {
       "player": {
         "type": "uri",
-        "value": "https://github.com/Metta-AI/crewrift/blob/master/docs/bitscreen_v1.md"
+        "value": "https://github.com/Metta-AI/crewrift/blob/master/docs/sprite_v1.md"
       },
       "global": {
         "type": "uri",

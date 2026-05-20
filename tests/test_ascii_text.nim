@@ -15,15 +15,6 @@ type TextCase = object
   x: int
   y: int
 
-proc initCrewriftForTest(config: GameConfig): SimServer =
-  ## Initializes Crewrift from the game directory.
-  let previousDir = getCurrentDir()
-  setCurrentDir(GameDir)
-  try:
-    result = initSimServer(config)
-  finally:
-    setCurrentDir(previousDir)
-
 proc loadTestAsciiSprites(): PixelFont =
   ## Loads the Crewrift tiny ASCII font for text OCR tests.
   loadPalette(RootDir / "clients" / "data" / "pallete.png")
@@ -65,54 +56,6 @@ proc assertTextRoundTrip(
   check found.y == sample.y
   check read == sample.text
 
-proc addPlayers(sim: var SimServer, count: int) =
-  ## Adds test players to the simulation.
-  for i in 0 ..< count:
-    discard sim.addPlayer("player" & $(i + 1))
-
-proc votingChatY(playerCount: int): int =
-  ## Returns the first text y coordinate in the voting chat panel.
-  let
-    cols = min(playerCount, 8)
-    rows = (playerCount + cols - 1) div cols
-    skipY = 2 + rows * 17 + 1
-  skipY + 11
-
-proc usefulChatLine(line: string): bool =
-  ## Returns true when a scanned chat line is usable text.
-  var
-    letters = 0
-    unknown = 0
-  for ch in line:
-    if ch in {'a' .. 'z'} or ch in {'A' .. 'Z'}:
-      inc letters
-    elif ch == '?':
-      inc unknown
-  letters >= 2 and unknown * 2 <= max(1, line.len)
-
-proc scanVotingChatRows(
-  frame: openArray[uint8],
-  asciiSprites: PixelFont,
-  startY: int
-): seq[string] =
-  ## Scans voting chat rows the same way the player does.
-  var previous = ""
-  var previousY = low(int)
-  for y in startY ..< ScreenHeight - 6:
-    let line = frame.readAsciiRun(
-      asciiSprites,
-      VoteChatTextX,
-      y,
-      VoteChatCharsPerLine
-    )
-    if not line.usefulChatLine():
-      continue
-    if line == previous and y - previousY <= 2:
-      continue
-    result.add(line)
-    previous = line
-    previousY = y
-
 suite "ascii text":
   test "round trips":
     let
@@ -128,55 +71,17 @@ suite "ascii text":
     for sample in cases:
       assertTextRoundTrip(asciiSprites, sample)
 
-  test "voting chat round trips":
-    var config = defaultGameConfig()
-    config.minPlayers = 8
-    config.tasksPerPlayer = 1
-    var sim = initCrewriftForTest(config)
-    sim.addPlayers(8)
-    sim.startVote()
-    let messages = [
-      "red sus",
-      "body in nav",
-      "blue covered red",
-      "green did tasks",
-      "yellow saw lime",
-      "skip maybe"
-    ]
-    for i, message in messages:
-      sim.addVotingChat(i, message)
-    discard sim.buildVoteFrame(0)
-
-    let
-      y = votingChatY(sim.players.len)
-      scanned = sim.fb.indices.scanVotingChatRows(sim.asciiSprites, y)
-      first = sim.fb.indices.readAsciiRun(
-        sim.asciiSprites,
-        VoteChatTextX,
-        y,
-        VoteChatCharsPerLine
-      )
-      second = sim.fb.indices.readAsciiRun(
-        sim.asciiSprites,
-        VoteChatTextX,
-        y + 13,
-        VoteChatCharsPerLine
-      )
-
-    check first == "red sus"
-    check second == "body in nav"
-    check scanned == @messages
-
-  test "dark background is ignored":
-    var sim = initCrewriftForTest(defaultGameConfig())
+  test "blank background is ignored":
+    let asciiSprites = loadTestAsciiSprites()
     let text = "red sus"
-    sim.clearInterstitialFrame()
-    check not sim.fb.indices.findAsciiText(sim.asciiSprites, text).found
-    sim.fb.blitAsciiText(sim.asciiSprites, text, 13, 47)
+    var fb = initFramebuffer()
+    fb.clearFrame(SpaceColor)
+    check not fb.indices.findAsciiText(asciiSprites, text).found
+    fb.blitAsciiText(asciiSprites, text, 13, 47)
     let
-      found = sim.fb.indices.findAsciiText(sim.asciiSprites, text)
-      line = sim.fb.indices.readAsciiRun(
-        sim.asciiSprites,
+      found = fb.indices.findAsciiText(asciiSprites, text)
+      line = fb.indices.readAsciiRun(
+        asciiSprites,
         found.x,
         found.y,
         text.len

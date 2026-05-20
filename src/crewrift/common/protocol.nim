@@ -4,10 +4,6 @@ const
   ScreenWidth* = 128
   ScreenHeight* = 128
   TileSize* = 6
-  ProtocolBytes* = (ScreenWidth * ScreenHeight) div 2
-  PacketInput* = 0'u8
-  PacketChat* = 1'u8
-  InputPacketBytes* = 2
   DefaultHost* = "localhost"
   DefaultPort* = 8080
   DefaultBaseAddress* = "ws://localhost:8080"
@@ -71,48 +67,7 @@ proc decodeInputMask*(mask: uint8): InputState =
   result.b = (mask and ButtonB) != 0
 
 proc blobFromBytes*(bytes: openArray[uint8]): string =
+  ## Builds a binary websocket payload from protocol bytes.
   result = newString(bytes.len)
   for i, value in bytes:
     result[i] = char(value)
-
-proc blobToBytes*(blob: string, bytes: var seq[uint8]) =
-  if bytes.len != blob.len:
-    bytes.setLen(blob.len)
-  for i in 0 ..< blob.len:
-    bytes[i] = blob[i].uint8
-
-proc blobFromMask*(mask: uint8): string =
-  ## Builds a button packet from an input mask.
-  result = newString(InputPacketBytes)
-  result[0] = char(PacketInput)
-  result[1] = char(mask)
-
-proc isInputPacket*(blob: string): bool =
-  ## Returns true when a blob is a button packet.
-  blob.len == InputPacketBytes and blob[0].uint8 == PacketInput
-
-proc isChatPacket*(blob: string): bool =
-  ## Returns true when a blob is a chat packet.
-  blob.len >= 1 and blob[0].uint8 == PacketChat
-
-proc blobToMask*(blob: string): uint8 =
-  ## Reads the input mask from a button packet.
-  if not blob.isInputPacket():
-    return 0
-  blob[1].uint8
-
-proc blobFromChat*(text: string): string =
-  ## Builds a chat packet from ASCII text.
-  result = newString(text.len + 1)
-  result[0] = char(PacketChat)
-  for i, ch in text:
-    result[i + 1] = ch
-
-proc blobToChat*(blob: string): string =
-  ## Reads printable ASCII text from a chat packet.
-  if not blob.isChatPacket():
-    return ""
-  for i in 1 ..< blob.len:
-    let value = blob[i].uint8
-    if value >= 32'u8 and value < 127'u8:
-      result.add(blob[i])

@@ -8,7 +8,6 @@ bin = @[
   "crewrift",
   "crewrift/replay_viewer",
   "crewrift/clients/global_client",
-  "crewrift/clients/player_client",
   "crewrift/clients/reward_client"
 ]
 

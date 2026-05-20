@@ -50,16 +50,16 @@ Connect to that URL exactly as supplied. The runner owns slot assignment and
 token generation. Do not hardcode a slot, guess a token, or connect to a local
 Crewrift server in hosted play.
 
-The player websocket uses Bitscreen v1:
+The player websocket uses Sprite v1:
 
 - Player protocol:
-  <https://github.com/Metta-AI/crewrift/blob/master/docs/bitscreen_v1.md>
+  <https://github.com/Metta-AI/crewrift/blob/master/docs/sprite_v1.md>
 - Global/replay viewer protocol:
   <https://github.com/Metta-AI/crewrift/blob/master/docs/sprite_v1.md>
 
 A player can be written in any language as long as its container starts the
-player process, connects to `COGAMES_ENGINE_WS_URL`, reads frames, and sends
-valid button or chat packets.
+player process, connects to `COGAMES_ENGINE_WS_URL`, reads sprite updates, and
+sends valid sprite input packets.
 
 ## Playing And Submitting
 

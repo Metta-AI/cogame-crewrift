@@ -56,6 +56,12 @@ the new definition. The label replaces the old label for that sprite id. A
 label length of `0` means the sprite has no label. Labels are for tooling,
 debugging, and human inspection. They do not affect rendering.
 
+Text-bearing sprites should put the visible text in the sprite label so agents
+can read game state without optical character recognition. Crewrift player
+endpoints also define one sprite labeled `walkability map`; agents may
+decompress that sprite and use its alpha channel as walkable pixels for path
+finding. Other sprite pixels should be treated as presentation data by agents.
+
 A sprite with width `0` or height `0` is invalid.
 
 ### Define Object
@@ -227,7 +233,7 @@ stable player position. `token` may be used for simple slot auth.
 | Message type | `u8` | `0x84` |
 | Buttons | `u8` | Current held player button bitmask |
 
-Button bit values match Bitscreen v1:
+Button bit values:
 
 | Bit | Value | Meaning |
 | ---: | ---: | --- |
