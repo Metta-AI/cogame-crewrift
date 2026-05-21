@@ -10,17 +10,19 @@ const
   PacketInput = 0'u8
   PacketChat = 1'u8
   InputPacketBytes = 2
+  MapSpriteId = 1
+  MapObjectId = 1
 
 type
   WireProtocolMode* = enum
     WireBitstream
     WireSprite
 
-  SpriteInfo = ref object
-    defined: bool
-    width: int
-    height: int
-    label: string
+  SpriteInfo* = ref object
+    defined*: bool
+    width*: int
+    height*: int
+    label*: string
     pixels: seq[uint8]
 
   ObjectState = object
@@ -41,7 +43,6 @@ type
     y*: int
     width*: int
     height*: int
-    label*: string
 
   ProtocolClient* = ref object
     mode*: WireProtocolMode
@@ -52,8 +53,16 @@ type
     frameBufferLen*: int
     framesDropped*: int
     skippedFrames*: int
+    mapCameraReady*: bool
+    mapCameraX*: int
+    mapCameraY*: int
+    walkabilityReady*: bool
+    walkabilityWidth*: int
+    walkabilityHeight*: int
+    walkabilityMask*: seq[bool]
     packed*: seq[uint8]
     unpacked*: seq[uint8]
+    objectIds: seq[int]
 
 proc initSpriteState(): SpriteState =
   ## Builds the initial sprite protocol state.
@@ -77,6 +86,13 @@ proc reset*(client: ProtocolClient) =
   client.frameBufferLen = 0
   client.framesDropped = 0
   client.skippedFrames = 0
+  client.mapCameraReady = false
+  client.mapCameraX = 0
+  client.mapCameraY = 0
+  client.walkabilityReady = false
+  client.walkabilityWidth = 0
+  client.walkabilityHeight = 0
+  client.walkabilityMask.setLen(0)
 
 proc protocolName*(mode: WireProtocolMode): string =
   ## Returns a short protocol mode name.
@@ -270,9 +286,58 @@ proc spriteObjectsWithLabel*(
       x: objectState.x,
       y: objectState.y,
       width: sprite.width,
-      height: sprite.height,
-      label: sprite.label
+      height: sprite.height
     ))
+
+iterator spriteObjects*(
+  client: ProtocolClient
+): tuple[
+  objectId: int,
+  x: int,
+  y: int,
+  width: int,
+  height: int,
+  label: string
+] =
+  ## Iterates present sprite objects with their sprite metadata.
+  if client.mode == WireSprite and not client.sprite.isNil:
+    for objectId, objectState in client.sprite.objects:
+      if not objectState.present:
+        continue
+      let sprite = client.sprite.spriteInfo(objectState.spriteId)
+      if sprite.isNil or not sprite.defined:
+        continue
+      yield (
+        objectId: objectId,
+        x: objectState.x,
+        y: objectState.y,
+        width: sprite.width,
+        height: sprite.height,
+        label: sprite.label
+      )
+
+iterator spriteObjectRefs*(
+  client: ProtocolClient
+): tuple[
+  objectId: int,
+  x: int,
+  y: int,
+  sprite: SpriteInfo
+] =
+  ## Iterates present sprite objects with a metadata reference.
+  if client.mode == WireSprite and not client.sprite.isNil:
+    for objectId, objectState in client.sprite.objects:
+      if not objectState.present:
+        continue
+      let sprite = client.sprite.spriteInfo(objectState.spriteId)
+      if sprite.isNil or not sprite.defined:
+        continue
+      yield (
+        objectId: objectId,
+        x: objectState.x,
+        y: objectState.y,
+        sprite: sprite
+      )
 
 proc readU16(blob: string, offset: int): int =
   ## Reads one little endian unsigned 16 bit value.
@@ -317,7 +382,30 @@ proc decodeSpritePixels(
     pixels[i] = nearestPaletteIndex(pixel)
   true
 
-proc applySpritePacket(client: ProtocolClient, packet: string): bool =
+proc decodeWalkabilityPixels(
+  width,
+  height: int,
+  compressed: string,
+  mask: var seq[bool]
+): bool =
+  ## Decodes the sprite protocol walkability payload into a bool mask.
+  var rawPixels = ""
+  try:
+    rawPixels = supersnappy.uncompress(compressed)
+  except CatchableError:
+    return false
+  if width <= 0 or height <= 0 or rawPixels.len != width * height * 4:
+    return false
+  mask.setLen(width * height)
+  for i in 0 ..< mask.len:
+    mask[i] = rawPixels[i * 4 + 3].uint8 > 0
+  true
+
+proc applySpritePacket(
+  client: ProtocolClient,
+  packet: string,
+  decodePixels: bool
+): bool =
   ## Applies sprite protocol messages to the retained scene state.
   var offset = 0
   while offset < packet.len:
@@ -347,14 +435,31 @@ proc applySpritePacket(client: ProtocolClient, packet: string): bool =
         else:
           ""
       offset += labelLen
-      let compressed =
-        if compressedLen > 0:
-          packet.substr(compressedStart, compressedStart + compressedLen - 1)
-        else:
-          ""
-      var pixels: seq[uint8]
-      if not decodeSpritePixels(width, height, compressed, pixels):
-        return false
+      let shouldDecodeWalkability = label == "walkability map"
+      let shouldDecodePixels = decodePixels
+      var
+        compressed = ""
+        pixels: seq[uint8]
+      if shouldDecodeWalkability or shouldDecodePixels:
+        compressed =
+          if compressedLen > 0:
+            packet.substr(compressedStart, compressedStart + compressedLen - 1)
+          else:
+            ""
+      if shouldDecodeWalkability:
+        if not decodeWalkabilityPixels(
+          width,
+          height,
+          compressed,
+          client.walkabilityMask
+        ):
+          return false
+        client.walkabilityReady = true
+        client.walkabilityWidth = width
+        client.walkabilityHeight = height
+      if shouldDecodePixels:
+        if not decodeSpritePixels(width, height, compressed, pixels):
+          return false
       client.sprite.ensureSprite(spriteId)
       client.sprite.sprites[spriteId] = SpriteInfo(
         defined: true,
@@ -383,6 +488,10 @@ proc applySpritePacket(client: ProtocolClient, packet: string): bool =
         layer: layer,
         spriteId: spriteId
       )
+      if objectId == MapObjectId and spriteId == MapSpriteId:
+        client.mapCameraReady = true
+        client.mapCameraX = -x
+        client.mapCameraY = -y
     of 0x03:
       if offset + 2 > packet.len:
         return false
@@ -390,9 +499,12 @@ proc applySpritePacket(client: ProtocolClient, packet: string): bool =
       offset += 2
       if objectId >= 0 and objectId < client.sprite.objects.len:
         client.sprite.objects[objectId].present = false
+      if objectId == MapObjectId:
+        client.mapCameraReady = false
     of 0x04:
       for item in client.sprite.objects.mitems:
         item.present = false
+      client.mapCameraReady = false
     of 0x05:
       if offset + 5 > packet.len:
         return false
@@ -416,7 +528,11 @@ proc objectCmp(state: SpriteState, a, b: int): int =
   if result == 0:
     result = system.cmp(a, b)
 
-proc drawObject(client: ProtocolClient, objectState: ObjectState) =
+proc drawObject(
+  client: ProtocolClient,
+  objectState: ObjectState,
+  unpacked: var seq[uint8]
+) =
   ## Draws one sprite object into the current 128x128 frame.
   if objectState.layer != 0:
     return
@@ -438,27 +554,36 @@ proc drawObject(client: ProtocolClient, objectState: ObjectState) =
     for x in startX ..< stopX:
       let color = sprite.pixels[sourceRow + x]
       if color != TransparentColorIndex:
-        client.unpacked[destRow + objectState.x + x] = color and 0x0f
+        unpacked[destRow + objectState.x + x] = color and 0x0f
 
-proc renderSpriteFrame(client: ProtocolClient) =
+proc renderSpriteFrame(
+  client: ProtocolClient,
+  unpacked,
+  packed: var seq[uint8]
+) =
   ## Renders the retained sprite scene into the palette-index framebuffer.
-  if client.unpacked.len != ScreenWidth * ScreenHeight:
-    client.unpacked.setLen(ScreenWidth * ScreenHeight)
-  for i in 0 ..< client.unpacked.len:
-    client.unpacked[i] = 0'u8
-  var objectIds: seq[int]
+  if unpacked.len != ScreenWidth * ScreenHeight:
+    unpacked.setLen(ScreenWidth * ScreenHeight)
+  for i in 0 ..< unpacked.len:
+    unpacked[i] = 0'u8
+  client.objectIds.setLen(0)
   for i, objectState in client.sprite.objects:
     if objectState.present:
-      objectIds.add(i)
-  objectIds.sort(proc(a, b: int): int = client.sprite.objectCmp(a, b))
-  for objectId in objectIds:
-    client.drawObject(client.sprite.objects[objectId])
-  pack4bpp(client.unpacked, client.packed)
+      client.objectIds.add(i)
+  client.objectIds.sort(proc(a, b: int): int = client.sprite.objectCmp(a, b))
+  for objectId in client.objectIds:
+    client.drawObject(client.sprite.objects[objectId], unpacked)
+  pack4bpp(unpacked, packed)
+
+proc renderSpriteFrame(client: ProtocolClient) =
+  ## Renders the retained sprite scene into client-owned buffers.
+  client.renderSpriteFrame(client.unpacked, client.packed)
 
 proc acceptPlayerMessage(
   ws: WebSocket,
   message: Message,
-  client: ProtocolClient
+  client: ProtocolClient,
+  decodePixels: bool
 ) =
   ## Handles one websocket message and updates the active parser.
   case message.kind
@@ -468,7 +593,7 @@ proc acceptPlayerMessage(
       if message.data.len == ProtocolBytes:
         client.queuedFrames.add(message.data)
     of WireSprite:
-      if not client.applySpritePacket(message.data):
+      if not client.applySpritePacket(message.data, decodePixels):
         raise newException(ValueError, "Malformed sprite protocol packet.")
       inc client.spritePending
   of Ping:
@@ -476,12 +601,14 @@ proc acceptPlayerMessage(
   of TextMessage, Pong:
     discard
 
-proc receiveLatestFrame*(
+proc receiveLatestFrameInto*(
   client: ProtocolClient,
   ws: WebSocket,
-  gui: bool
+  gui: bool,
+  packed,
+  unpacked: var seq[uint8]
 ): bool =
-  ## Receives wire data and updates the latest unpacked frame.
+  ## Receives wire data and updates the provided reusable frame buffers.
   client.frameAdvance = 0
   if client.queuedFrames.len == 0 and client.spritePending == 0:
     let firstMessage = ws.receiveMessage(if gui: 10 else: -1)
@@ -489,14 +616,14 @@ proc receiveLatestFrame*(
       client.frameBufferLen = 0
       client.framesDropped = 0
       return false
-    ws.acceptPlayerMessage(firstMessage.get, client)
+    ws.acceptPlayerMessage(firstMessage.get, client, gui)
 
   var drained = 0
   while drained < MaxFrameDrain:
     let message = ws.receiveMessage(0)
     if message.isNone:
       break
-    ws.acceptPlayerMessage(message.get, client)
+    ws.acceptPlayerMessage(message.get, client, gui)
     inc drained
 
   case client.mode
@@ -518,8 +645,8 @@ proc receiveLatestFrame*(
       client.queuedFrames.delete(0)
     client.frameBufferLen = client.queuedFrames.len
     client.skippedFrames += client.framesDropped
-    blobToBytes(frame, client.packed)
-    unpack4bpp(client.packed, client.unpacked)
+    blobToBytes(frame, packed)
+    unpack4bpp(packed, unpacked)
   of WireSprite:
     if client.spritePending == 0:
       client.frameBufferLen = 0
@@ -530,8 +657,17 @@ proc receiveLatestFrame*(
     client.frameBufferLen = 0
     client.skippedFrames += client.framesDropped
     client.spritePending = 0
-    client.renderSpriteFrame()
+    if gui:
+      client.renderSpriteFrame(unpacked, packed)
   true
+
+proc receiveLatestFrame*(
+  client: ProtocolClient,
+  ws: WebSocket,
+  gui: bool
+): bool =
+  ## Receives wire data and updates the latest client-owned frame buffers.
+  client.receiveLatestFrameInto(ws, gui, client.packed, client.unpacked)
 
 proc copyLatestFrame*(
   client: ProtocolClient,

@@ -1,4 +1,4 @@
-import pixie, protocol, framebuffers, sim, texts, votereader, server,
+import pixie, protocol, framebuffers, sim, texts, votereader,
   truecrew/protocols
 when defined(profileTracePath):
   import profile
@@ -150,6 +150,11 @@ const
   VoteChatSpeakerSearch = 24
   TaskRadarResetTicks = 100
   SpriteTaskArrowObjectBase = 7000
+  ProtocolTextObjectBase = 9000
+  ProtocolChatIconObjectBase = 9200
+  ProtocolVoteIconObjectBase = 9300
+  SpritePlayerVoteDotObjectBase = 10100
+  SpritePlayerVoteSkipDotObjectBase = 10400
 
 when not defined(italkalotLibrary):
   type ViewerApp = ref object
@@ -235,12 +240,12 @@ type
     colorIndex: int
     y: int
 
-  VoteChatLine = object
+  VoteChatLine = ref object
     speakerColor: int
     y: int
     text: string
 
-  Bot = object
+  Bot = ref object
     sim: SimServer
     playerSprite: Sprite
     bodySprite: Sprite
@@ -303,6 +308,7 @@ type
     frameBufferLen: int
     framesDropped: int
     skippedFrames: int
+    lastDropLogTick: int
     lastMask: uint8
     lastThought: string
     pendingChat: string
@@ -341,12 +347,24 @@ type
     hasPathStep: bool
     pathStep: PathStep
     path: seq[PathStep]
+    pathParents: seq[int]
+    pathCosts: seq[int]
+    pathSeen: seq[int]
+    pathClosed: seq[int]
+    pathStamp: int
     radarDots: seq[RadarDot]
     spriteRadarDots: seq[RadarDot]
     spriteTaskIcons: seq[IconMatch]
     spriteRadarTasks: seq[bool]
     spriteIconTasks: seq[bool]
     spriteDetectionsReady: bool
+    protocolCameraReady: bool
+    protocolCameraX: int
+    protocolCameraY: int
+    protocolWalkabilityReady: bool
+    protocolInterstitialReady: bool
+    protocolInterstitialText: string
+    protocolVotingReady: bool
     radarTasks: seq[bool]
     checkoutTasks: seq[bool]
     taskStates: seq[TaskState]
@@ -881,6 +899,14 @@ proc updateSelfColor(bot: var Bot)
 
 proc parseVotingScreen(bot: var Bot): bool
 
+proc chatSusColorIndex(text: string): int
+
+proc voteChatTextFromLines(lines: openArray[VoteChatLine]): string
+
+proc voteSusColorAllowed(bot: Bot, colorIndex: int): bool
+
+proc randomVoteDelay(bot: var Bot): int
+
 proc clearButtonResetMeeting(bot: var Bot)
 
 proc asciiTextWidth(bot: Bot, text: string): int =
@@ -923,7 +949,7 @@ proc detectInterstitialText(bot: Bot): string =
 
 proc isGameOverText(text: string): bool =
   ## Returns true when interstitial text means the round has ended.
-  text == "CREW WINS" or text == "IMPS WIN"
+  text == "CREW WINS" or text == "IMPS WIN" or text == "DRAW"
 
 proc clearVotingState(bot: var Bot) =
   ## Clears the parsed voting screen state.
@@ -1003,6 +1029,11 @@ proc resetRoundState(bot: var Bot) =
   bot.spriteRadarTasks.setLen(0)
   bot.spriteIconTasks.setLen(0)
   bot.spriteDetectionsReady = false
+  bot.protocolCameraReady = false
+  bot.protocolWalkabilityReady = false
+  bot.protocolInterstitialReady = false
+  bot.protocolInterstitialText = ""
+  bot.protocolVotingReady = false
   bot.visibleTaskIcons.setLen(0)
   bot.visibleCrewmates.setLen(0)
   bot.visibleBodies.setLen(0)
@@ -1219,9 +1250,29 @@ proc updateLocation(bot: var Bot) {.measure.} =
   bot.localizeSpiralMicros = 0
   bot.lastCameraX = bot.cameraX
   bot.lastCameraY = bot.cameraY
-  bot.interstitial = bot.isInterstitialScreen()
+  let protocolMapReady =
+    bot.spriteDetectionsReady and bot.protocolCameraReady
+  let protocolTextReady =
+    bot.spriteDetectionsReady and bot.protocolInterstitialReady
+  let protocolVoteReady =
+    bot.spriteDetectionsReady and bot.protocolVotingReady
+  bot.interstitial =
+    if protocolMapReady:
+      false
+    elif protocolTextReady or protocolVoteReady:
+      true
+    elif bot.spriteDetectionsReady:
+      true
+    else:
+      bot.isInterstitialScreen()
   if bot.interstitial:
-    bot.interstitialText = bot.detectInterstitialText()
+    bot.interstitialText =
+      if protocolVoteReady:
+        "SKIP"
+      elif protocolTextReady:
+        bot.protocolInterstitialText
+      else:
+        bot.detectInterstitialText()
     bot.visibleTaskIcons.setLen(0)
     bot.visibleCrewmates.setLen(0)
     bot.visibleBodies.setLen(0)
@@ -1230,6 +1281,18 @@ proc updateLocation(bot: var Bot) {.measure.} =
         bot.lastGameOverText != bot.interstitialText:
       bot.resetRoundState()
       bot.lastGameOverText = bot.interstitialText
+    elif protocolVoteReady:
+      discard
+    elif protocolTextReady:
+      if bot.voting:
+        bot.clearVotingState()
+      if bot.interstitialText == "CREWMATE" and bot.role == RoleUnknown:
+        bot.role = RoleCrewmate
+      elif bot.interstitialText == "IMPS":
+        bot.role = RoleImposter
+    elif bot.spriteDetectionsReady:
+      if bot.voting:
+        bot.clearVotingState()
     elif not bot.parseVotingScreen():
       bot.rememberRoleReveal()
     return
@@ -1243,7 +1306,15 @@ proc updateLocation(bot: var Bot) {.measure.} =
     bot.clearButtonResetMeeting()
   if wasInterstitial:
     bot.roundStartTick = bot.frameTick
-    bot.reseedLocalizationAtHome()
+    if not protocolMapReady:
+      bot.reseedLocalizationAtHome()
+  if protocolMapReady:
+    bot.cameraX = bot.protocolCameraX
+    bot.cameraY = bot.protocolCameraY
+    bot.cameraLock = FrameMapLock
+    bot.cameraScore = 0
+    bot.localized = true
+    return
   let spriteStart = getMonoTime()
   bot.updateRole()
   bot.updateSelfColor()
@@ -1428,11 +1499,154 @@ proc addIconMatch(matches: var seq[IconMatch], x, y: int) =
       return
   matches.add(IconMatch(x: x, y: y))
 
+proc protocolBodyColorIndex(label: string): int =
+  ## Returns the color index for one sprite protocol body label.
+  for i, colorName in PlayerColorNames:
+    if label == "body " & colorName:
+      return i
+  -1
+
+proc protocolActorLabel(
+  label: string
+): tuple[found: bool, ghost: bool, colorIndex: int, flipH: bool] =
+  ## Parses one sprite protocol player or ghost label.
+  for i, colorName in PlayerColorNames:
+    let playerPrefix = "player " & colorName & " "
+    if label == playerPrefix & "right":
+      return (true, false, i, false)
+    if label == playerPrefix & "left":
+      return (true, false, i, true)
+    let ghostPrefix = "ghost " & colorName & " "
+    if label == ghostPrefix & "right":
+      return (true, true, i, false)
+    if label == ghostPrefix & "left":
+      return (true, true, i, true)
+
+proc protocolSelfObject(x, y, width, height: int): bool =
+  ## Returns true when a sprite protocol object is centered on this bot.
+  let
+    centerX = x + width div 2
+    centerY = y + height div 2
+  abs(centerX - PlayerScreenX) <= SpriteSize and
+    abs(centerY - PlayerScreenY) <= SpriteSize
+
+proc protocolVoteDotColorIndex(label: string): int =
+  ## Returns the voter color encoded in a vote dot sprite label.
+  for i, colorName in PlayerColorNames:
+    if label == "vote dot " & colorName:
+      return i
+  VoteUnknown
+
+proc protocolVoteMarkerColorIndex(label: string): int =
+  ## Returns the local color encoded in a vote self marker label.
+  for i, colorName in PlayerColorNames:
+    if label == "vote self marker " & colorName:
+      return i
+  VoteUnknown
+
+proc protocolVoteCellAt(count, x, y: int): int =
+  ## Returns the voting slot containing one protocol object point.
+  if count <= 0:
+    return VoteUnknown
+  let
+    cols = min(count, 8)
+    totalW = cols * VoteCellW
+    startX = (ScreenWidth - totalW) div 2
+  for i in 0 ..< count:
+    let
+      cellX = startX + (i mod cols) * VoteCellW
+      cellY = VoteStartY + (i div cols) * VoteCellH
+    if x >= cellX - 2 and x < cellX + VoteCellW + 2 and
+        y >= cellY - 3 and y < cellY + VoteCellH + 2:
+      return i
+  VoteUnknown
+
+proc protocolInterstitialLabel(label: string): bool =
+  ## Returns true when a text sprite label identifies a modal screen.
+  case label
+  of "WAITING", "NEED MORE!", "GAME", "STARTING", "GAME IN",
+      "PROGRESS", "IMPS", "CREWMATE", "NO ONE", "DIED",
+      "WAS KILLED", "DRAW", "CREW WINS", "IMPS WIN":
+    true
+  else:
+    label.startsWith("IN ")
+
+proc applyProtocolVotingState(
+  bot: var Bot,
+  playerCount,
+  cursor,
+  selfSlot: int,
+  slots: array[MaxPlayers, VoteSlot],
+  choices: array[PlayerColorCount, int],
+  chatLines: openArray[VoteChatLine]
+): bool =
+  ## Applies a voting screen parsed from sprite protocol metadata.
+  if playerCount <= 0 or playerCount > MaxPlayers:
+    return false
+  var seenColors: array[PlayerColorCount, bool]
+  for i in 0 ..< playerCount:
+    let colorIndex = slots[i].colorIndex
+    if colorIndex < 0 or colorIndex >= PlayerColorCount:
+      return false
+    if seenColors[colorIndex]:
+      return false
+    seenColors[colorIndex] = true
+  let
+    startTick =
+      if bot.voting and bot.voteStartTick >= 0:
+        bot.voteStartTick
+      else:
+        bot.frameTick
+    previousDelay = bot.voteDelayTicks
+    previousQueuedSusColor = bot.voteQueuedSusColor
+    previousImposterChatDecided = bot.voteImposterChatDecided
+    previousLoggedTarget = bot.voteLoggedTarget
+    previousLoggedReason = bot.voteLoggedReason
+  bot.clearVotingState()
+  bot.voting = true
+  bot.votePlayerCount = playerCount
+  bot.voteStartTick = startTick
+  bot.voteDelayTicks =
+    if previousDelay >= 0:
+      previousDelay
+    else:
+      bot.randomVoteDelay()
+  bot.voteQueuedSusColor = previousQueuedSusColor
+  bot.voteImposterChatDecided = previousImposterChatDecided
+  bot.voteLoggedTarget = previousLoggedTarget
+  bot.voteLoggedReason = previousLoggedReason
+  bot.voteCursor = cursor
+  bot.voteSelfSlot = selfSlot
+  for i in 0 ..< playerCount:
+    bot.voteSlots[i] = slots[i]
+  for i in 0 ..< bot.voteChoices.len:
+    bot.voteChoices[i] = choices[i]
+  if selfSlot >= 0 and selfSlot < playerCount:
+    bot.selfColorIndex = slots[selfSlot].colorIndex
+  for line in chatLines:
+    bot.voteChatLines.add(line)
+  bot.voteChatText = voteChatTextFromLines(bot.voteChatLines)
+  let susColor = chatSusColorIndex(bot.voteChatText)
+  bot.voteChatSusColor =
+    if bot.voteSusColorAllowed(susColor):
+      susColor
+    else:
+      VoteUnknown
+  true
+
 proc updateProtocolDetections(bot: var Bot, client: ProtocolClient) =
   ## Caches structured task objects from the current sprite frame.
   bot.spriteDetectionsReady = client.mode == WireSprite
+  bot.protocolCameraReady = false
+  bot.protocolInterstitialReady = false
+  bot.protocolInterstitialText = ""
+  bot.protocolVotingReady = false
   bot.spriteRadarDots.setLen(0)
   bot.spriteTaskIcons.setLen(0)
+  if bot.spriteDetectionsReady:
+    bot.visibleCrewmates.setLen(0)
+    bot.visibleBodies.setLen(0)
+    bot.visibleGhosts.setLen(0)
   if bot.spriteRadarTasks.len != bot.sim.tasks.len:
     bot.spriteRadarTasks = newSeq[bool](bot.sim.tasks.len)
   else:
@@ -1445,16 +1659,201 @@ proc updateProtocolDetections(bot: var Bot, client: ProtocolClient) =
       bot.spriteIconTasks[i] = false
   if not bot.spriteDetectionsReady:
     return
-  for item in client.spriteObjectsWithLabel("task bubble"):
-    bot.spriteTaskIcons.addIconMatch(item.x, item.y)
-    let index = item.objectId - TaskObjectBase
-    if index >= 0 and index < bot.spriteIconTasks.len:
-      bot.spriteIconTasks[index] = true
-  for item in client.spriteObjectsWithLabel("task arrow"):
-    bot.spriteRadarDots.addRadarDot(item.x, item.y)
-    let index = item.objectId - SpriteTaskArrowObjectBase
-    if index >= 0 and index < bot.spriteRadarTasks.len:
-      bot.spriteRadarTasks[index] = true
+  if client.walkabilityReady and not bot.protocolWalkabilityReady:
+    if client.walkabilityWidth != MapWidth or
+        client.walkabilityHeight != MapHeight or
+        client.walkabilityMask.len != MapWidth * MapHeight:
+      raise newException(
+        ValueError,
+        "sprite protocol walkability map size did not match the game map"
+      )
+    if bot.sim.walkMask.len != client.walkabilityMask.len:
+      bot.sim.walkMask.setLen(client.walkabilityMask.len)
+    for i in 0 ..< client.walkabilityMask.len:
+      bot.sim.walkMask[i] = client.walkabilityMask[i]
+    bot.protocolWalkabilityReady = true
+  if client.mapCameraReady:
+    if not bot.protocolWalkabilityReady:
+      raise newException(
+        ValueError,
+        "sprite protocol did not include required sprite labeled " &
+          "\"walkability map\""
+      )
+    bot.protocolCameraReady = true
+    bot.protocolCameraX = client.mapCameraX
+    bot.protocolCameraY = client.mapCameraY
+  var
+    voteSlots: array[MaxPlayers, VoteSlot]
+    voteChoices: array[PlayerColorCount, int]
+    votePlayerCount = 0
+    voteCursor = VoteUnknown
+    voteCursorSeen = false
+    voteCursorIsSkip = false
+    voteCursorX = 0
+    voteCursorY = 0
+    voteSelfSlot = VoteUnknown
+    voteSelfSeen = false
+    voteSelfX = 0
+    voteSelfY = 0
+    voteSelfColor = VoteUnknown
+    voteSkipSeen = false
+    chatSpeakers: array[VoteChatVisibleMessages, VoteChatSpeaker]
+    chatSpeakerCount = 0
+    chatLines: seq[VoteChatLine]
+  for i in 0 ..< voteSlots.len:
+    voteSlots[i].colorIndex = VoteUnknown
+  for i in 0 ..< voteChoices.len:
+    voteChoices[i] = VoteUnknown
+  for item in client.spriteObjectRefs():
+    let label = item.sprite.label
+    case label
+    of "task bubble":
+      bot.spriteTaskIcons.addIconMatch(item.x, item.y)
+      let index = item.objectId - TaskObjectBase
+      if index >= 0 and index < bot.spriteIconTasks.len:
+        bot.spriteIconTasks[index] = true
+    of "task arrow":
+      bot.spriteRadarDots.addRadarDot(item.x, item.y)
+      let index = item.objectId - SpriteTaskArrowObjectBase
+      if index >= 0 and index < bot.spriteRadarTasks.len:
+        bot.spriteRadarTasks[index] = true
+    of "imposter icon":
+      bot.role = RoleImposter
+      bot.isGhost = false
+      bot.imposterKillReady = true
+    of "imposter icon cooldown":
+      bot.role = RoleImposter
+      bot.isGhost = false
+      bot.imposterKillReady = false
+    of "ghost icon":
+      bot.isGhost = true
+    of "SKIP":
+      voteSkipSeen = true
+    else:
+      if protocolInterstitialLabel(label) and
+          bot.protocolInterstitialText.len == 0:
+        bot.protocolInterstitialReady = true
+        bot.protocolInterstitialText = label
+      let actor = protocolActorLabel(label)
+      if actor.found:
+        if protocolSelfObject(
+          item.x,
+          item.y,
+          item.sprite.width,
+          item.sprite.height
+        ):
+          bot.selfColorIndex = actor.colorIndex
+          bot.isGhost = actor.ghost
+        if actor.ghost:
+          bot.visibleGhosts.add(GhostMatch(
+            x: item.x,
+            y: item.y,
+            flipH: actor.flipH
+          ))
+        else:
+          bot.visibleCrewmates.add(CrewmateMatch(
+            x: item.x,
+            y: item.y,
+            colorIndex: actor.colorIndex,
+            flipH: actor.flipH
+          ))
+          if actor.colorIndex >= 0 and
+              actor.colorIndex < bot.lastSeenTicks.len:
+            bot.lastSeenTicks[actor.colorIndex] = bot.frameTick
+      if item.objectId >= ProtocolVoteIconObjectBase and
+          item.objectId < ProtocolVoteIconObjectBase + MaxPlayers:
+        let slot = item.objectId - ProtocolVoteIconObjectBase
+        if actor.found:
+          voteSlots[slot].colorIndex = actor.colorIndex
+          voteSlots[slot].alive = true
+          votePlayerCount = max(votePlayerCount, slot + 1)
+      if item.objectId >= ProtocolChatIconObjectBase and
+          item.objectId < ProtocolChatIconObjectBase + VoteChatVisibleMessages:
+        if actor.found and chatSpeakerCount < chatSpeakers.len:
+          chatSpeakers[chatSpeakerCount] = VoteChatSpeaker(
+            colorIndex: actor.colorIndex,
+            y: item.y
+          )
+          inc chatSpeakerCount
+      let bodyColor = protocolBodyColorIndex(label)
+      if bodyColor >= 0:
+        bot.visibleBodies.add(BodyMatch(x: item.x, y: item.y))
+        if bodyColor < bot.bodySeenTicks.len:
+          bot.bodySeenTicks[bodyColor] = bot.frameTick
+        if item.objectId >= ProtocolVoteIconObjectBase and
+            item.objectId < ProtocolVoteIconObjectBase + MaxPlayers:
+          let slot = item.objectId - ProtocolVoteIconObjectBase
+          voteSlots[slot].colorIndex = bodyColor
+          voteSlots[slot].alive = false
+          votePlayerCount = max(votePlayerCount, slot + 1)
+      let voteDotColor = protocolVoteDotColorIndex(label)
+      if voteDotColor >= 0:
+        if item.objectId >= SpritePlayerVoteDotObjectBase and
+            item.objectId < SpritePlayerVoteDotObjectBase +
+              MaxPlayers * MaxPlayers:
+          let target = (item.objectId - SpritePlayerVoteDotObjectBase) div
+            MaxPlayers
+          if target >= 0 and target < MaxPlayers:
+            voteChoices[voteDotColor] = target
+        elif item.objectId >= SpritePlayerVoteSkipDotObjectBase and
+            item.objectId < SpritePlayerVoteSkipDotObjectBase + MaxPlayers:
+          voteChoices[voteDotColor] = VoteSkip
+      if label == "vote cursor" or label == "vote skip cursor":
+        voteCursorSeen = true
+        voteCursorIsSkip = label == "vote skip cursor"
+        voteCursorX = item.x
+        voteCursorY = item.y
+      let markerColor = protocolVoteMarkerColorIndex(label)
+      if markerColor >= 0:
+        voteSelfSeen = true
+        voteSelfColor = markerColor
+        voteSelfX = item.x
+        voteSelfY = item.y
+      if item.objectId >= ProtocolTextObjectBase and
+          item.objectId < ProtocolTextObjectBase + VoteChatVisibleMessages +
+            2 and
+          label.len > 0 and label != "SKIP" and
+          not protocolInterstitialLabel(label):
+        chatLines.add(VoteChatLine(
+          speakerColor: VoteUnknown,
+          y: item.y,
+          text: label
+        ))
+  if bot.protocolInterstitialText == "IMPS":
+    for crewmate in bot.visibleCrewmates:
+      if crewmate.colorIndex >= 0 and
+          crewmate.colorIndex < bot.knownImposters.len:
+        bot.knownImposters[crewmate.colorIndex] = true
+  if voteSkipSeen and votePlayerCount > 0:
+    if voteCursorSeen:
+      voteCursor =
+        if voteCursorIsSkip:
+          votePlayerCount
+        else:
+          protocolVoteCellAt(votePlayerCount, voteCursorX, voteCursorY)
+    if voteSelfSeen:
+      voteSelfSlot = protocolVoteCellAt(votePlayerCount, voteSelfX, voteSelfY)
+      if voteSelfColor >= 0 and voteSelfColor < PlayerColorCount:
+        bot.selfColorIndex = voteSelfColor
+    for line in chatLines:
+      var
+        bestColor = VoteUnknown
+        bestDistance = high(int)
+      for i in 0 ..< chatSpeakerCount:
+        let distance = abs(chatSpeakers[i].y - line.y)
+        if distance < bestDistance:
+          bestDistance = distance
+          bestColor = chatSpeakers[i].colorIndex
+      if bestDistance <= VoteChatSpeakerSearch:
+        line.speakerColor = bestColor
+    bot.protocolVotingReady = bot.applyProtocolVotingState(
+      votePlayerCount,
+      voteCursor,
+      voteSelfSlot,
+      voteSlots,
+      voteChoices,
+      chatLines
+    )
 
 proc stableCrewmateColor(color: uint8): bool =
   ## Returns true for non-body crewmate sprite pixels.
@@ -2504,7 +2903,13 @@ proc updateTaskIcons(bot: var Bot) {.measure.} =
       bot.taskIconMisses[i] = 0
     elif bot.taskHoldTicks == 0 and
         bot.taskIconClearAreaVisible(task) and
-        not bot.taskIconMaybeVisibleFor(task) and
+        (
+          if bot.spriteDetectionsReady and
+              bot.spriteIconTasks.len == bot.sim.tasks.len:
+            not bot.spriteIconTasks[i]
+          else:
+            not bot.taskIconMaybeVisibleFor(task)
+        ) and
         (bot.radarTasks.len != bot.sim.tasks.len or not bot.radarTasks[i]) and
         bot.taskHoldIndex != i:
       if bot.taskStates[i] == TaskMandatory:
@@ -2800,27 +3205,41 @@ proc findPath(bot: Bot, goalX, goalY: int): seq[PathStep] {.measure.} =
     goalIndex = mapIndexSafe(goalX, goalY)
   if not bot.passable(startX, startY) or not bot.passable(goalX, goalY):
     return
-  var
-    parents = newSeq[int](area)
-    costs = newSeq[int](area)
-    closed = newSeq[bool](area)
-    openSet: HeapQueue[PathNode]
-  for i in 0 ..< area:
-    parents[i] = -2
-    costs[i] = high(int)
-  parents[startIndex] = -1
-  costs[startIndex] = 0
+  if bot.pathParents.len != area:
+    bot.pathParents = newSeq[int](area)
+    bot.pathCosts = newSeq[int](area)
+    bot.pathSeen = newSeq[int](area)
+    bot.pathClosed = newSeq[int](area)
+    bot.pathStamp = 0
+  inc bot.pathStamp
+  if bot.pathStamp == high(int):
+    for i in 0 ..< area:
+      bot.pathSeen[i] = 0
+      bot.pathClosed[i] = 0
+    bot.pathStamp = 1
+  let stamp = bot.pathStamp
+
+  template touch(index: int) =
+    if bot.pathSeen[index] != stamp:
+      bot.pathSeen[index] = stamp
+      bot.pathParents[index] = -2
+      bot.pathCosts[index] = high(int)
+
+  var openSet: HeapQueue[PathNode]
+  touch(startIndex)
+  bot.pathParents[startIndex] = -1
+  bot.pathCosts[startIndex] = 0
   openSet.push(PathNode(
     priority: heuristic(startX, startY, goalX, goalY),
     index: startIndex
   ))
   while openSet.len > 0:
     let current = openSet.pop()
-    if closed[current.index]:
+    if bot.pathClosed[current.index] == stamp:
       continue
     if current.index == goalIndex:
-      return reconstructPath(parents, startIndex, goalIndex)
-    closed[current.index] = true
+      return reconstructPath(bot.pathParents, startIndex, goalIndex)
+    bot.pathClosed[current.index] = stamp
     let
       x = current.index mod tileWidth()
       y = current.index div tileWidth()
@@ -2831,13 +3250,14 @@ proc findPath(bot: Bot, goalX, goalY: int): seq[PathStep] {.measure.} =
       if not bot.passable(nx, ny):
         continue
       let nextIndex = mapIndexSafe(nx, ny)
-      if closed[nextIndex]:
+      if bot.pathClosed[nextIndex] == stamp:
         continue
-      let newCost = costs[current.index] + 1
-      if newCost >= costs[nextIndex]:
+      touch(nextIndex)
+      let newCost = bot.pathCosts[current.index] + 1
+      if newCost >= bot.pathCosts[nextIndex]:
         continue
-      costs[nextIndex] = newCost
-      parents[nextIndex] = current.index
+      bot.pathCosts[nextIndex] = newCost
+      bot.pathParents[nextIndex] = current.index
       openSet.push(PathNode(
         priority: newCost + heuristic(nx, ny, goalX, goalY),
         index: nextIndex
@@ -2854,9 +3274,7 @@ proc pathDistance(bot: Bot, goalX, goalY: int): int =
 
 proc goalDistance(bot: Bot, goalX, goalY: int): int =
   ## Returns the distance metric for choosing the next goal.
-  if bot.isGhost:
-    return heuristic(bot.playerWorldX(), bot.playerWorldY(), goalX, goalY)
-  bot.pathDistance(goalX, goalY)
+  heuristic(bot.playerWorldX(), bot.playerWorldY(), goalX, goalY)
 
 proc taskGoalFor(
   bot: Bot,
@@ -4152,7 +4570,8 @@ proc decideNextMask(bot: var Bot): uint8 {.measure.} =
     bot.thought(bot.intent)
     return 0
   bot.updateMotionState()
-  bot.rememberVisibleMap()
+  if not bot.protocolCameraReady:
+    bot.rememberVisibleMap()
   bot.updateTaskGuesses()
   bot.resetTasksFromRadar()
   bot.updateTaskIcons()
@@ -4300,6 +4719,7 @@ proc botGameDir(): string =
 proc initBot(mapPath = ""): Bot {.measure.} =
   ## Builds a bot and loads all map and sprite data.
   setCurrentDir(botGameDir())
+  result = Bot()
   var config = defaultGameConfig()
   if mapPath.len > 0:
     config.mapPath = mapPath
@@ -4320,6 +4740,7 @@ proc initBot(mapPath = ""): Bot {.measure.} =
   result.taskStates = newSeq[TaskState](result.sim.tasks.len)
   result.taskIconMisses = newSeq[int](result.sim.tasks.len)
   result.lastTaskRadarResetTick = -TaskRadarResetTicks
+  result.lastDropLogTick = -1_000_000
   result.buildPatchEntries()
   result.cameraX = result.sim.buttonCameraX()
   result.cameraY = result.sim.buttonCameraY()
@@ -5027,18 +5448,26 @@ when not defined(italkalotLibrary):
             if not viewer.viewerOpen():
               ws.close()
               break
-          if not client.receiveLatestFrame(ws, gui):
+          if not client.receiveLatestFrameInto(
+            ws,
+            gui,
+            bot.packed,
+            bot.unpacked
+          ):
             continue
           bot.frameTick += client.frameAdvance
           bot.frameBufferLen = client.frameBufferLen
           bot.framesDropped = client.framesDropped
           bot.skippedFrames = client.skippedFrames
-          if bot.framesDropped > 0:
+          if bot.framesDropped > 0 and (
+              bot.frameTick - bot.lastDropLogTick >= 120 or
+              bot.framesDropped >= 16
+          ):
             echo "frames dropped: ", bot.framesDropped,
               " buffered=", client.frameAdvance,
               " total=", bot.skippedFrames,
               " tick=", bot.frameTick
-          client.copyLatestFrame(bot.packed, bot.unpacked)
+            bot.lastDropLogTick = bot.frameTick
           bot.updateProtocolDetections(client)
           let nextMask = bot.decideNextMask()
           if profileShouldDump(bot.frameTick):

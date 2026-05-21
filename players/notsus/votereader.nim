@@ -3,8 +3,7 @@ import
   protocol,
   framebuffers,
   sim,
-  pixelfonts,
-  server
+  pixelfonts
 
 const
   VoteReaderCellW* = 16
@@ -45,12 +44,12 @@ type
     colorIndex*: int
     alive*: bool
 
-  VoteReaderChat* = object
+  VoteReaderChat* = ref object
     colorIndex*: int
     lines*: seq[string]
     text*: string
 
-  VoteReaderFrame* = object
+  VoteReaderFrame* = ref object
     found*: bool
     playerCount*: int
     cursor*: int
@@ -63,6 +62,7 @@ type
 
 proc initVoteReaderFrame(): VoteReaderFrame =
   ## Returns a vote read initialized with unknown sentinel values.
+  result = VoteReaderFrame()
   result.cursor = VoteReaderUnknown
   result.selfSlot = VoteReaderUnknown
   result.chatSusColor = VoteReaderUnknown
@@ -505,7 +505,7 @@ proc parseVoteChat(
     return
   var entries = newSeq[VoteReaderChat](icons.len)
   for i, icon in icons:
-    entries[i].colorIndex = icon.colorIndex
+    entries[i] = VoteReaderChat(colorIndex: icon.colorIndex)
   for lineY in frame.textLineStarts(
     VoteChatTextX,
     chatY,
