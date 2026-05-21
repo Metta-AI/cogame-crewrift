@@ -1,6 +1,7 @@
 import
   std/strutils,
   protocol,
+  profile,
   framebuffers,
   sim,
   pixelfonts
@@ -303,7 +304,7 @@ proc parseSlot(
   bodySprite: Sprite,
   count,
   index: int
-): VoteReaderSlot =
+): VoteReaderSlot {.measure.} =
   ## Parses color and alive state for one voting grid slot.
   result.colorIndex = VoteReaderUnknown
   let
@@ -454,7 +455,7 @@ proc scanChatIcons(
   frame: openArray[uint8],
   playerSprite: Sprite,
   chatY: int
-): seq[tuple[y: int, colorIndex: int]] =
+): seq[tuple[y: int, colorIndex: int]] {.measure.} =
   ## Finds speaker icons in the voting chat panel.
   var y = max(0, chatY)
   while y <= ScreenHeight - playerSprite.height:
@@ -498,7 +499,7 @@ proc parseVoteChat(
   font: PixelFont,
   playerSprite: Sprite,
   chatY: int
-): seq[VoteReaderChat] =
+): seq[VoteReaderChat] {.measure.} =
   ## Parses voting chat speakers and message text.
   let icons = frame.scanChatIcons(playerSprite, chatY)
   if icons.len == 0:
@@ -549,7 +550,7 @@ proc spanGap(aStart, aEnd, bStart, bEnd: int): int =
   else:
     0
 
-proc voteReaderChatSusColorIndex*(text: string): int =
+proc voteReaderChatSusColorIndex*(text: string): int {.measure.} =
   ## Returns the player color that visible chat calls sus.
   let
     padded = " " & text.normalizeChatText() & " "
@@ -597,7 +598,7 @@ proc parseVoteCandidate(
   playerSprite,
   bodySprite: Sprite,
   count: int
-): VoteReaderFrame =
+): VoteReaderFrame {.measure.} =
   ## Parses the vote screen for one possible player count.
   result = initVoteReaderFrame()
   if count <= 0 or count > MaxPlayers:
@@ -660,7 +661,7 @@ proc parseVoteFrame*(
   playerSprite,
   bodySprite: Sprite,
   expectedCount = 0
-): VoteReaderFrame =
+): VoteReaderFrame {.measure.} =
   ## Parses the visible voting screen from a 128 by 128 framebuffer.
   if frame.len < ScreenWidth * ScreenHeight:
     return initVoteReaderFrame()

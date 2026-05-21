@@ -1,7 +1,7 @@
 import
   std/[algorithm, options, strutils],
   pixie, supersnappy, whisky,
-  protocol, framebuffers
+  protocol, profile, framebuffers
 
 const
   MaxFrameDrain* = 128
@@ -135,7 +135,7 @@ proc addQueryParam*(url, key, value: string): string =
     return url
   url & (if '?' in url: "&" else: "?") & key & "=" & value.queryEscape()
 
-proc blobToBytes*(blob: string, bytes: var seq[uint8]) =
+proc blobToBytes*(blob: string, bytes: var seq[uint8]) {.measure.} =
   ## Copies websocket blob bytes into a reusable byte buffer.
   if bytes.len != blob.len:
     bytes.setLen(blob.len)
@@ -223,7 +223,7 @@ proc chatBlob*(mode: WireProtocolMode, text: string): string =
 proc unpack4bpp*(
   packed: openArray[uint8],
   unpacked: var seq[uint8]
-) =
+) {.measure.} =
   ## Expands one packed 4 bit framebuffer into palette indices.
   let targetLen = packed.len * 2
   if unpacked.len != targetLen:
@@ -235,7 +235,7 @@ proc unpack4bpp*(
 proc pack4bpp*(
   unpacked: openArray[uint8],
   packed: var seq[uint8]
-) =
+) {.measure.} =
   ## Packs palette indices into the old 4 bit framebuffer layout.
   let targetLen = unpacked.len div 2
   if packed.len != targetLen:
@@ -246,7 +246,10 @@ proc pack4bpp*(
       hi = unpacked[i * 2 + 1] and 0x0f
     packed[i] = lo or (hi shl 4)
 
-proc copyBytes(source: openArray[uint8], target: var seq[uint8]) =
+proc copyBytes(
+  source: openArray[uint8],
+  target: var seq[uint8]
+) {.measure.} =
   ## Copies byte data while reusing the target allocation.
   if target.len != source.len:
     target.setLen(source.len)
@@ -362,7 +365,7 @@ proc decodeSpritePixels(
   height: int,
   compressed: string,
   pixels: var seq[uint8]
-): bool =
+): bool {.measure.} =
   ## Decodes one compressed RGBA sprite payload into palette indices.
   var rawPixels = ""
   try:
@@ -387,7 +390,7 @@ proc decodeWalkabilityPixels(
   height: int,
   compressed: string,
   mask: var seq[bool]
-): bool =
+): bool {.measure.} =
   ## Decodes the sprite protocol walkability payload into a bool mask.
   var rawPixels = ""
   try:
@@ -405,7 +408,7 @@ proc applySpritePacket(
   client: ProtocolClient,
   packet: string,
   decodePixels: bool
-): bool =
+): bool {.measure.} =
   ## Applies sprite protocol messages to the retained scene state.
   var offset = 0
   while offset < packet.len:
@@ -435,8 +438,9 @@ proc applySpritePacket(
         else:
           ""
       offset += labelLen
-      let shouldDecodeWalkability = label == "walkability map"
-      let shouldDecodePixels = decodePixels
+      let
+        shouldDecodeWalkability = label == "walkability map"
+        shouldDecodePixels = decodePixels
       var
         compressed = ""
         pixels: seq[uint8]
@@ -532,12 +536,14 @@ proc drawObject(
   client: ProtocolClient,
   objectState: ObjectState,
   unpacked: var seq[uint8]
-) =
+) {.measure.} =
   ## Draws one sprite object into the current 128x128 frame.
   if objectState.layer != 0:
     return
   let sprite = client.sprite.spriteInfo(objectState.spriteId)
   if sprite.isNil or not sprite.defined:
+    return
+  if sprite.pixels.len != sprite.width * sprite.height:
     return
   let
     startX = max(0, -objectState.x)
@@ -560,7 +566,7 @@ proc renderSpriteFrame(
   client: ProtocolClient,
   unpacked,
   packed: var seq[uint8]
-) =
+) {.measure.} =
   ## Renders the retained sprite scene into the palette-index framebuffer.
   if unpacked.len != ScreenWidth * ScreenHeight:
     unpacked.setLen(ScreenWidth * ScreenHeight)
@@ -584,7 +590,7 @@ proc acceptPlayerMessage(
   message: Message,
   client: ProtocolClient,
   decodePixels: bool
-) =
+) {.measure.} =
   ## Handles one websocket message and updates the active parser.
   case message.kind
   of BinaryMessage:
@@ -607,7 +613,7 @@ proc receiveLatestFrameInto*(
   gui: bool,
   packed,
   unpacked: var seq[uint8]
-): bool =
+): bool {.measure.} =
   ## Receives wire data and updates the provided reusable frame buffers.
   client.frameAdvance = 0
   if client.queuedFrames.len == 0 and client.spritePending == 0:

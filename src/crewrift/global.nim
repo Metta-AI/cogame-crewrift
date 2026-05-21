@@ -140,7 +140,6 @@ type
     width: int
     height: int
     label: string
-    pixels: seq[uint8]
 
   GlobalViewerState* = object
     initialized*: bool
@@ -290,47 +289,31 @@ proc spriteDefinitionIndex(
       return i
   -1
 
-proc pixelsMatch(a: openArray[uint8], b: openArray[uint8]): bool =
-  ## Returns true when two RGBA pixel payloads are identical.
-  if a.len != b.len:
-    return false
-  for i in 0 ..< a.len:
-    if a[i] != b[i]:
-      return false
-  true
-
-proc copyPixels(pixels: openArray[uint8]): seq[uint8] =
-  ## Copies one sprite payload into cache storage.
-  result = newSeq[uint8](pixels.len)
-  for i in 0 ..< pixels.len:
-    result[i] = pixels[i]
-
 proc addSpriteChanged(
   packet: var seq[uint8],
   defs: var seq[SpriteDefinition],
   spriteId, width, height: int,
   pixels: openArray[uint8],
-  label: string = ""
+  label: string = "",
+  changed = false
 ) {.measure.} =
-  ## Appends a sprite definition only when it changed.
+  ## Appends a sprite definition when metadata or caller dirtiness changed.
   let index = defs.spriteDefinitionIndex(spriteId)
   if index >= 0:
     if defs[index].width == width and
         defs[index].height == height and
         defs[index].label == label and
-        defs[index].pixels.pixelsMatch(pixels):
+        not changed:
       return
     defs[index].width = width
     defs[index].height = height
     defs[index].label = label
-    defs[index].pixels = copyPixels(pixels)
   else:
     defs.add SpriteDefinition(
       spriteId: spriteId,
       width: width,
       height: height,
-      label: label,
-      pixels: copyPixels(pixels)
+      label: label
     )
   packet.addSprite(spriteId, width, height, pixels, label)
 
@@ -989,7 +972,8 @@ proc addProtocolTextSprites(
       text.width,
       text.height,
       text.pixels,
-      item.label
+      item.label,
+      changed = item.struck or item.color != ProtocolTextColor
     )
     packet.addObject(
       item.objectId,
@@ -1171,7 +1155,8 @@ proc addProtocolVoteUiSprites(
     ScreenWidth - 4,
     2,
     sim.buildVoteProgressSprite(),
-    "vote timer"
+    "vote timer",
+    changed = true
   )
   packet.addObject(
     SpritePlayerVoteProgressObjectId,
@@ -1906,7 +1891,7 @@ proc addScoreboard(
       text.width,
       text.height,
       text.pixels,
-      "score " & player.playerLabelText()
+      "score " & player.scoreboardText() & " color " & $color
     )
     packet.addObject(
       textObjectId,
@@ -2225,8 +2210,11 @@ proc buildSpriteProtocolPlayerUpdates*(
       cameraX = view.cameraX
       cameraY = view.cameraY
       viewerIsGhost = view.viewerIsGhost
-    if not viewerIsGhost:
-      sim.usePlayerShadowMask(playerIndex, view)
+    let shadowChanged =
+      if viewerIsGhost:
+        false
+      else:
+        sim.usePlayerShadowMask(playerIndex, view)
     currentIds.add(MapObjectId)
     result.addObject(
       MapObjectId,
@@ -2237,16 +2225,20 @@ proc buildSpriteProtocolPlayerUpdates*(
       MapSpriteId
     )
     if not viewerIsGhost:
-      let shadowPixels = sim.buildPlayerShadowSprite(cameraX, cameraY)
       currentIds.add(SpritePlayerShadowObjectId)
-      result.addSpriteChanged(
-        nextState.spriteDefs,
-        SpritePlayerShadowSpriteId,
-        ScreenWidth,
-        ScreenHeight,
-        shadowPixels,
-        "shadow"
-      )
+      if shadowChanged or
+          nextState.spriteDefs.spriteDefinitionIndex(
+            SpritePlayerShadowSpriteId
+          ) < 0:
+        result.addSpriteChanged(
+          nextState.spriteDefs,
+          SpritePlayerShadowSpriteId,
+          ScreenWidth,
+          ScreenHeight,
+          sim.buildPlayerShadowSprite(cameraX, cameraY),
+          "shadow",
+          changed = shadowChanged
+        )
       result.addObject(
         SpritePlayerShadowObjectId,
         0,
@@ -2356,7 +2348,8 @@ proc buildSpriteProtocolPlayerUpdates*(
               player.taskProgress,
               sim.config.taskCompleteTicks
             ),
-            "progress bar " & $progressPercent & "%"
+            "progress bar " & $progressPercent & "%",
+            changed = true
           )
           result.addObject(
             SpritePlayerProgressObjectId,
@@ -2904,7 +2897,8 @@ proc buildSpriteProtocolUpdates*(
     scrubber.width,
     scrubber.height,
     scrubber.pixels,
-    "replay scrubber"
+    "replay scrubber",
+    changed = replayEnabled or controlMaxTick > 0
   )
   result.addObject(
     ReplayScrubberObjectId,
@@ -2920,7 +2914,8 @@ proc buildSpriteProtocolUpdates*(
     controls.width,
     controls.height,
     controls.pixels,
-    "replay controls"
+    "replay controls",
+    changed = true
   )
   result.addObject(
     ReplayControlsObjectId,

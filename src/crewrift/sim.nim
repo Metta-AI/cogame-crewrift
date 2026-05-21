@@ -2726,11 +2726,11 @@ proc usePlayerShadowMask*(
   sim: var SimServer,
   playerIndex: int,
   view: PlayerView
-) {.measure.} =
-  ## Loads or refreshes the cached shadow mask for one player view.
+): bool {.measure.} =
+  ## Loads the shadow mask and returns true when it was refreshed.
   if playerIndex < 0 or playerIndex >= sim.players.len or view.viewerIsGhost:
     sim.clearShadowBuffer()
-    return
+    return false
 
   sim.ensureShadowCacheSlots()
   template cache: untyped = sim.shadowCaches[playerIndex]
@@ -2740,7 +2740,7 @@ proc usePlayerShadowMask*(
       cache.originMx == view.originMx and
       cache.originMy == view.originMy:
     sim.shadowBuf.copyShadowMask(cache.mask)
-    return
+    return false
 
   sim.castShadows(view.originMx, view.originMy, view.cameraX, view.cameraY)
   cache.valid = true
@@ -2749,6 +2749,7 @@ proc usePlayerShadowMask*(
   cache.originMx = view.originMx
   cache.originMy = view.originMy
   cache.mask.copyShadowMask(sim.shadowBuf)
+  result = true
 {.pop.}
 
 proc allVotesCast*(sim: SimServer): bool =

@@ -9,7 +9,8 @@ else:
 when not defined(italkalotLibrary):
   import whisky
   when not defined(botHeadless):
-    import silky, windy, scales
+    import windy, scales
+    import silky except measure
 import std/[algorithm, exitprocs, heapqueue, monotimes, options, os,
   parseopt, random, strutils, times]
 
@@ -73,6 +74,10 @@ const
   TaskClearScreenMargin = 8
   TaskIconMissThreshold = 24
   PathLookahead = 18
+  PathReuseTicks = 60
+  PathCursorSearch = 64
+  PathConsumeDistance = 3
+  PathDeviationLimit = 16
   TaskInnerMargin = 6
   TaskPreciseApproachRadius = 12
   CoastLookaheadTicks = 8
@@ -347,6 +352,10 @@ type
     hasPathStep: bool
     pathStep: PathStep
     path: seq[PathStep]
+    pathCursor: int
+    pathGoalX: int
+    pathGoalY: int
+    pathPlanTick: int
     pathParents: seq[int]
     pathCosts: seq[int]
     pathSeen: seq[int]
@@ -973,6 +982,15 @@ proc clearVotingState(bot: var Bot) =
   bot.voteLoggedTarget = VoteUnknown
   bot.voteLoggedReason = ""
 
+proc clearPath(bot: var Bot) =
+  ## Clears the cached A* route.
+  bot.hasPathStep = false
+  bot.path.setLen(0)
+  bot.pathCursor = 0
+  bot.pathGoalX = low(int)
+  bot.pathGoalY = low(int)
+  bot.pathPlanTick = -1
+
 proc resetRoundState(bot: var Bot) =
   ## Clears per-round bot state after a detected game-over screen.
   bot.localized = false
@@ -1020,8 +1038,7 @@ proc resetRoundState(bot: var Bot) =
   bot.goalIndex = -1
   bot.goalName = ""
   bot.hasGoal = false
-  bot.hasPathStep = false
-  bot.path.setLen(0)
+  bot.clearPath()
   bot.lastTaskRadarResetTick = -TaskRadarResetTicks
   bot.radarDots.setLen(0)
   bot.spriteRadarDots.setLen(0)
@@ -1085,8 +1102,7 @@ proc reseedLocalizationAtHome(bot: var Bot) =
   bot.goalIndex = -1
   bot.goalName = ""
   bot.hasGoal = false
-  bot.hasPathStep = false
-  bot.path.setLen(0)
+  bot.clearPath()
 
 proc isInterstitialScreen(bot: Bot): bool {.measure.} =
   ## Returns true when a black modal screen hides the map.
@@ -1579,7 +1595,7 @@ proc applyProtocolVotingState(
   slots: array[MaxPlayers, VoteSlot],
   choices: array[PlayerColorCount, int],
   chatLines: openArray[VoteChatLine]
-): bool =
+): bool {.measure.} =
   ## Applies a voting screen parsed from sprite protocol metadata.
   if playerCount <= 0 or playerCount > MaxPlayers:
     return false
@@ -1634,7 +1650,7 @@ proc applyProtocolVotingState(
       VoteUnknown
   true
 
-proc updateProtocolDetections(bot: var Bot, client: ProtocolClient) =
+proc updateProtocolDetections(bot: var Bot, client: ProtocolClient) {.measure.} =
   ## Caches structured task objects from the current sprite frame.
   bot.spriteDetectionsReady = client.mode == WireSprite
   bot.protocolCameraReady = false
@@ -3272,6 +3288,76 @@ proc pathDistance(bot: Bot, goalX, goalY: int): int =
     return high(int)
   path.len
 
+proc pathGoalMatches(bot: Bot, goalX, goalY: int): bool =
+  ## Returns true when the cached route targets the requested goal.
+  bot.path.len > 0 and bot.pathGoalX == goalX and bot.pathGoalY == goalY
+
+proc advancePathCursor(bot: var Bot) =
+  ## Advances the cached route cursor to the current player position.
+  if bot.path.len == 0:
+    bot.pathCursor = 0
+    return
+  if bot.pathCursor < 0:
+    bot.pathCursor = 0
+  if bot.pathCursor > bot.path.high:
+    bot.pathCursor = bot.path.high
+  let
+    x = bot.playerWorldX()
+    y = bot.playerWorldY()
+    last = min(bot.path.high, bot.pathCursor + PathCursorSearch)
+  var
+    bestIndex = bot.pathCursor
+    bestDistance = high(int)
+  for i in bot.pathCursor .. last:
+    let distance = heuristic(x, y, bot.path[i].x, bot.path[i].y)
+    if distance < bestDistance:
+      bestDistance = distance
+      bestIndex = i
+  if bestDistance <= PathDeviationLimit:
+    bot.pathCursor = bestIndex
+  while bot.pathCursor < bot.path.len and
+      heuristic(
+        x,
+        y,
+        bot.path[bot.pathCursor].x,
+        bot.path[bot.pathCursor].y
+      ) <= PathConsumeDistance:
+    inc bot.pathCursor
+  if bot.pathCursor > bot.path.high:
+    bot.pathCursor = bot.path.high
+
+proc cachedPathUsable(bot: var Bot, goalX, goalY: int): bool =
+  ## Returns true when the cached route can still be followed.
+  if not bot.pathGoalMatches(goalX, goalY):
+    return false
+  if bot.frameTick - bot.pathPlanTick >= PathReuseTicks:
+    return false
+  if bot.stuckFrames >= StuckFrameThreshold:
+    return false
+  bot.advancePathCursor()
+  let
+    x = bot.playerWorldX()
+    y = bot.playerWorldY()
+    step = bot.path[bot.pathCursor]
+  heuristic(x, y, step.x, step.y) <= PathDeviationLimit
+
+proc ensurePathTo(bot: var Bot, goalX, goalY: int): bool =
+  ## Reuses or rebuilds the cached A* route to one goal.
+  if bot.cachedPathUsable(goalX, goalY):
+    bot.astarMicros = 0
+    return true
+  let astarStart = getMonoTime()
+  bot.path = bot.findPath(goalX, goalY)
+  bot.astarMicros = int((getMonoTime() - astarStart).inMicroseconds)
+  bot.pathCursor = 0
+  bot.pathGoalX = goalX
+  bot.pathGoalY = goalY
+  bot.pathPlanTick = bot.frameTick
+  if bot.path.len == 0:
+    return false
+  bot.advancePathCursor()
+  true
+
 proc goalDistance(bot: Bot, goalX, goalY: int): int =
   ## Returns the distance metric for choosing the next goal.
   heuristic(bot.playerWorldX(), bot.playerWorldY(), goalX, goalY)
@@ -4008,8 +4094,7 @@ proc logVoteDecision(bot: var Bot, target: int, reason: string) =
 proc decideVotingMask(bot: var Bot): uint8 {.measure.} =
   ## Chooses voting-screen input from parsed vote state.
   bot.hasGoal = false
-  bot.hasPathStep = false
-  bot.path.setLen(0)
+  bot.clearPath()
   bot.clearInvalidBodySusChat()
   bot.maybeQueueImposterSusChat()
   let ownVote = bot.selfVoteChoice()
@@ -4266,7 +4351,9 @@ proc choosePathStep(bot: Bot): PathStep {.measure.} =
   ## Returns a short lookahead waypoint from the current path.
   if bot.path.len == 0:
     return
-  let index = min(bot.path.high, PathLookahead)
+  let
+    start = min(max(0, bot.pathCursor), bot.path.high)
+    index = min(bot.path.high, start + PathLookahead)
   bot.path[index]
 
 proc taskReady(bot: Bot, task: TaskStation): bool =
@@ -4318,8 +4405,7 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
   bot.intent = "doing task at " & name & " hold=" & $bot.taskHoldTicks
   bot.desiredMask = ButtonA
   bot.controllerMask = ButtonA
-  bot.hasPathStep = false
-  bot.path.setLen(0)
+  bot.clearPath()
   if bot.taskHoldTicks > 0:
     dec bot.taskHoldTicks
   if bot.taskHoldTicks == 0 and
@@ -4341,8 +4427,7 @@ proc reportBodyAction(bot: var Bot, x, y: int): uint8 =
   bot.intent = "reporting dead body"
   bot.desiredMask = ButtonA
   bot.controllerMask = ButtonA
-  bot.hasPathStep = false
-  bot.path.setLen(0)
+  bot.clearPath()
   bot.taskHoldTicks = 0
   bot.taskHoldIndex = -1
   bot.queueBodyReport(x, y)
@@ -4354,8 +4439,7 @@ proc pressButtonResetAction(bot: var Bot): uint8 =
   bot.intent = "pressing button to reset imposter cool downs"
   bot.desiredMask = ButtonA
   bot.controllerMask = ButtonA
-  bot.hasPathStep = false
-  bot.path.setLen(0)
+  bot.clearPath()
   bot.taskHoldTicks = 0
   bot.taskHoldIndex = -1
   bot.pendingChat = ButtonResetChat
@@ -4382,24 +4466,22 @@ proc navigateToPoint(
   bot.goalY = y
   bot.goalName = name
   if bot.isGhost:
-    bot.path.setLen(0)
-    bot.hasPathStep = false
+    bot.clearPath()
     bot.astarMicros = 0
     bot.intent = "ghost direct to " & name
     bot.desiredMask = bot.preciseMaskForGoal(x, y)
+  elif heuristic(bot.playerWorldX(), bot.playerWorldY(), x, y) <=
+      preciseRadius:
+    bot.clearPath()
+    bot.astarMicros = 0
+    bot.intent = "precise approach to " & name
+    bot.desiredMask = bot.preciseMaskForGoal(x, y)
   else:
-    let astarStart = getMonoTime()
-    bot.path = bot.findPath(x, y)
-    bot.astarMicros = int((getMonoTime() - astarStart).inMicroseconds)
+    discard bot.ensurePathTo(x, y)
     bot.pathStep = bot.choosePathStep()
     bot.hasPathStep = bot.pathStep.found
     bot.intent = "A* to " & name & " path=" & $bot.path.len
-    if heuristic(bot.playerWorldX(), bot.playerWorldY(), x, y) <=
-        preciseRadius:
-      bot.intent = "precise approach to " & name
-      bot.desiredMask = bot.preciseMaskForGoal(x, y)
-    else:
-      bot.desiredMask = bot.maskForWaypoint(bot.pathStep)
+    bot.desiredMask = bot.maskForWaypoint(bot.pathStep)
   bot.controllerMask = bot.desiredMask
   let mask = bot.applyJiggle(bot.controllerMask)
   let prefix =
@@ -4446,8 +4528,7 @@ proc attackVisibleCrewmate(
     bot.intent = "kill " & name
     bot.desiredMask = ButtonA
     bot.controllerMask = ButtonA
-    bot.hasPathStep = false
-    bot.path.setLen(0)
+    bot.clearPath()
     bot.thought(name & " in range, attacking")
     return ButtonA
   bot.goalIndex = -2
@@ -4455,8 +4536,7 @@ proc attackVisibleCrewmate(
   bot.goalX = target.x
   bot.goalY = target.y
   bot.goalName = name
-  bot.hasPathStep = false
-  bot.path.setLen(0)
+  bot.clearPath()
   bot.astarMicros = 0
   bot.intent = "hard chase " & name
   bot.desiredMask = bot.hardChaseMask(target.x, target.y)
@@ -4556,8 +4636,7 @@ proc decideNextMask(bot: var Bot): uint8 {.measure.} =
   if bot.interstitial:
     bot.updateMotionState()
     bot.hasGoal = false
-    bot.hasPathStep = false
-    bot.path.setLen(0)
+    bot.clearPath()
     if bot.voting:
       return bot.decideVotingMask()
     bot.desiredMask = 0
@@ -4577,11 +4656,11 @@ proc decideNextMask(bot: var Bot): uint8 {.measure.} =
   bot.updateTaskIcons()
   bot.hasGoal = false
   bot.hasPathStep = false
-  bot.path.setLen(0)
   bot.desiredMask = 0
   bot.controllerMask = 0
   bot.intent = "localizing"
   if not bot.localized:
+    bot.clearPath()
     bot.thought("waiting for a reliable map lock")
     return 0
   bot.rememberHome()
@@ -4620,6 +4699,7 @@ proc decideNextMask(bot: var Bot): uint8 {.measure.} =
     )
   let goal = bot.nearestTaskGoal()
   if not goal.found:
+    bot.clearPath()
     bot.intent = "localized, no task goal"
     bot.thought("localized near (" & $bot.playerWorldX() & ", " &
       $bot.playerWorldY() & ")")
@@ -4640,17 +4720,6 @@ proc decideNextMask(bot: var Bot): uint8 {.measure.} =
     return bot.holdTaskAction(goal.name)
   if bot.isGhost:
     return bot.navigateToPoint(goal.x, goal.y, goal.name)
-  let astarStart = getMonoTime()
-  bot.path = bot.findPath(goal.x, goal.y)
-  bot.astarMicros = int((getMonoTime() - astarStart).inMicroseconds)
-  bot.pathStep = bot.choosePathStep()
-  bot.hasPathStep = bot.pathStep.found
-  bot.intent =
-    if goal.index < 0:
-      "gather at " & goal.name & " path=" & $bot.path.len
-    else:
-      "A* to " & goal.name & " path=" & $bot.path.len &
-        " state=" & $goal.state
   if goal.state == TaskMandatory and
       heuristic(
         bot.playerWorldX(),
@@ -4658,10 +4727,21 @@ proc decideNextMask(bot: var Bot): uint8 {.measure.} =
         goal.x,
         goal.y
       ) <= TaskPreciseApproachRadius:
+    bot.clearPath()
+    bot.astarMicros = 0
     bot.intent = "precise task approach to " & goal.name &
       " state=" & $goal.state
     bot.desiredMask = bot.preciseMaskForGoal(goal.x, goal.y)
   else:
+    discard bot.ensurePathTo(goal.x, goal.y)
+    bot.pathStep = bot.choosePathStep()
+    bot.hasPathStep = bot.pathStep.found
+    bot.intent =
+      if goal.index < 0:
+        "gather at " & goal.name & " path=" & $bot.path.len
+      else:
+        "A* to " & goal.name & " path=" & $bot.path.len &
+          " state=" & $goal.state
     bot.desiredMask = bot.maskForWaypoint(bot.pathStep)
   bot.controllerMask = bot.desiredMask
   let mask = bot.applyJiggle(bot.controllerMask)
@@ -4750,6 +4830,7 @@ proc initBot(mapPath = ""): Bot {.measure.} =
   result.imposterGoalIndex = -1
   result.imposterProwlIndex = -1
   result.goalIndex = -1
+  result.clearPath()
   result.lastBodySeenX = low(int)
   result.lastBodySeenY = low(int)
   result.lastBodyReportX = low(int)
@@ -5188,7 +5269,8 @@ when not defined(italkalotLibrary) and not defined(botHeadless):
         x + bot.playerWorldX().float32 * scale,
         y + bot.playerWorldY().float32 * scale
       )
-      for i in countup(0, bot.path.high, 8):
+      let start = min(max(0, bot.pathCursor), bot.path.high)
+      for i in countup(start, bot.path.high, 8):
         let current = vec2(
           x + bot.path[i].x.float32 * scale,
           y + bot.path[i].y.float32 * scale
@@ -5413,12 +5495,13 @@ when not defined(italkalotLibrary):
     slot = -1,
     exitOnDisconnect = false,
     protocolMode = WireSprite
-  ) {.measure.} =
+  ) =
     ## Connects to a Crewrift server and processes player frames.
     ## If `url` is non-empty it is used as the WebSocket endpoint (scheme,
     ## host, port, path); otherwise we build ws://host:port/player. A
     ## missing path is filled in with WebSocketPath.
-    startProfileTrace()
+    if not gui:
+      startProfileTrace()
     var bot = initBot(mapPath)
     let endpoint =
       if url.len > 0: ensureWsPath(url, WebSocketPath)
@@ -5448,12 +5531,23 @@ when not defined(italkalotLibrary):
             if not viewer.viewerOpen():
               ws.close()
               break
-          if not client.receiveLatestFrameInto(
-            ws,
-            gui,
-            bot.packed,
-            bot.unpacked
-          ):
+          var receivedFrame = false
+          if gui:
+            receivedFrame = client.receiveLatestFrameInto(
+              ws,
+              gui,
+              bot.packed,
+              bot.unpacked
+            )
+          else:
+            profileBlock "receive latest frame":
+              receivedFrame = client.receiveLatestFrameInto(
+                ws,
+                gui,
+                bot.packed,
+                bot.unpacked
+              )
+          if not receivedFrame:
             continue
           bot.frameTick += client.frameAdvance
           bot.frameBufferLen = client.frameBufferLen
@@ -5468,17 +5562,35 @@ when not defined(italkalotLibrary):
               " total=", bot.skippedFrames,
               " tick=", bot.frameTick
             bot.lastDropLogTick = bot.frameTick
-          bot.updateProtocolDetections(client)
-          let nextMask = bot.decideNextMask()
-          if profileShouldDump(bot.frameTick):
+          if gui:
+            bot.updateProtocolDetections(client)
+          else:
+            profileBlock "update protocol detections":
+              bot.updateProtocolDetections(client)
+          var nextMask = 0'u8
+          if gui:
+            nextMask = bot.decideNextMask()
+          else:
+            profileBlock "decide next mask":
+              nextMask = bot.decideNextMask()
+          if not gui and profileShouldDump(bot.frameTick):
             finishProfileTrace()
           bot.lastMask = nextMask
           if nextMask != lastMask:
-            ws.send(protocolMode.inputBlob(nextMask), BinaryMessage)
+            if gui:
+              ws.send(protocolMode.inputBlob(nextMask), BinaryMessage)
+            else:
+              profileBlock "send input":
+                ws.send(protocolMode.inputBlob(nextMask), BinaryMessage)
             lastMask = nextMask
           if bot.pendingChatReady():
-            ws.send(protocolMode.chatBlob(bot.pendingChat), BinaryMessage)
-            bot.pendingChat = ""
+            if gui:
+              ws.send(protocolMode.chatBlob(bot.pendingChat), BinaryMessage)
+              bot.pendingChat = ""
+            else:
+              profileBlock "send chat":
+                ws.send(protocolMode.chatBlob(bot.pendingChat), BinaryMessage)
+                bot.pendingChat = ""
       except Exception as e:
         if connected:
           echo "connection lost: ", e.msg
