@@ -1,7 +1,8 @@
 import
-  std/[json, math, os, random, strutils],
+  std/[json, math, os, random, strutils, tables],
   jsony, pixie,
   crewrift/aseprite,
+  crewrift/resources,
   protocol, profile,
   crewrift/common/pixelfonts,
   crewrift/common/framebuffers
@@ -16,13 +17,21 @@ const
   ReplayJoinRecord* = 0x03'u8
   ReplayLeaveRecord* = 0x04'u8
   ReplayFps* = 24
-  DefaultMapPath* = "map.json"
+  DefaultMapPath* = "data/croatoan.resources"
   DarkBgPath* = "darkbg.aseprite"
-  MapWidth* = 952
-  MapHeight* = 534
+  MapWidth* = 1235
+  MapHeight* = 659
   SpriteSize* = 12
   CrewSpriteSize* = 16
   CrewSpriteVariants* = 8
+  VoteActorSize* = CrewSpriteSize + 2
+  VoteCellW* = VoteActorSize
+  VoteCellH* = VoteActorSize + 4
+  VoteColsMax* = 7
+  VoteStartY* = 2
+  VoteSkipW* = 28
+  VoteSkipCursorW* = VoteSkipW + 2
+  VoteSkipCursorH* = 8
   CollisionW* = 1
   CollisionH* = 1
   SpriteDrawOffX* = 2
@@ -65,7 +74,7 @@ const
   ButtonCalls* = 1
   VoteChatVisibleMessages* = 6
   VoteChatIconX* = 1
-  VoteChatTextX* = VoteChatIconX + SpriteSize + 1
+  VoteChatTextX* = VoteChatIconX + VoteActorSize + 1
   VoteChatRightPad* = 1
   VoteChatTextPixels* = ScreenWidth - VoteChatTextX - VoteChatRightPad
   VoteChatCharsPerLine* = 32
@@ -647,6 +656,109 @@ proc readRoom(node: JsonNode): Room =
     h: node.requireInt("h")
   )
 
+proc centerPoint(rect: ResourceRect): MapPoint =
+  ## Returns the center point for one resource rectangle.
+  MapPoint(x: rect.x + rect.w div 2, y: rect.y + rect.h div 2)
+
+proc centerPoint(room: Room): MapPoint =
+  ## Returns the center point for one room rectangle.
+  MapPoint(x: room.x + room.w div 2, y: room.y + room.h div 2)
+
+proc roomDistanceSquared*(room: Room, x, y: int): int =
+  ## Returns the squared distance from a point to a room edge.
+  let
+    dx =
+      if x < room.x:
+        room.x - x
+      elif x >= room.x + room.w:
+        x - (room.x + room.w - 1)
+      else:
+        0
+    dy =
+      if y < room.y:
+        room.y - y
+      elif y >= room.y + room.h:
+        y - (room.y + room.h - 1)
+      else:
+        0
+  dx * dx + dy * dy
+
+proc nearestRoomAt*(
+  rooms: openArray[Room],
+  x, y: int
+): tuple[found: bool, inside: bool, name: string] =
+  ## Returns the containing or nearest room for one map point.
+  var bestDistance = high(int)
+  for room in rooms:
+    let distance = room.roomDistanceSquared(x, y)
+    if distance == 0:
+      return (true, true, room.name)
+    if distance < bestDistance:
+      bestDistance = distance
+      result = (true, false, room.name)
+
+proc resourceNameKey(value: string): string =
+  ## Returns a normalized resource name key.
+  value.strip().toLowerAscii()
+
+proc isVentResource(name: string): bool =
+  ## Returns true when a resource block is a vent marker.
+  let key = name.resourceNameKey()
+  key.startsWith("vent") and key != "vents"
+
+proc isTaskResource(name: string): bool =
+  ## Returns true when a resource block is a task marker.
+  name.resourceNameKey() == "task"
+
+proc isRoomResource(name: string): bool =
+  ## Returns true when a resource block is a named room rectangle.
+  let key = name.resourceNameKey()
+  key.len > 0 and key notin ["vents", "tasks", "rooms"] and
+    not key.startsWith("vent") and key != "task"
+
+proc ventGroupChar(name: string): char =
+  ## Returns the compact vent group id for one resource vent name.
+  let key = name.resourceNameKey()
+  for i in countdown(key.high, 0):
+    if key[i] in {'a' .. 'z', '0' .. '9'}:
+      return key[i]
+  'v'
+
+proc nextVentGroupIndex(
+  counts: var Table[string, int],
+  name: string
+): int =
+  ## Returns the next serial index for one repeated vent resource name.
+  let key = name.resourceNameKey()
+  result = counts.getOrDefault(key, 0) + 1
+  counts[key] = result
+
+proc taskNameForResource(
+  rooms: openArray[Room],
+  rect: ResourceRect,
+  index: int
+): string =
+  ## Builds a useful task name from the nearest room.
+  let
+    center = rect.centerPoint()
+    room = nearestRoomAt(rooms, center.x, center.y)
+  if room.found:
+    "Task near " & room.name
+  else:
+    "Task " & $(index + 1)
+
+proc centeredMapRect(
+  center: MapPoint,
+  width, height, mapWidth, mapHeight: int
+): MapRect =
+  ## Builds a map rectangle centered on one point and clamped to the map.
+  MapRect(
+    x: clamp(center.x - width div 2, 0, max(0, mapWidth - width)),
+    y: clamp(center.y - height div 2, 0, max(0, mapHeight - height)),
+    w: width,
+    h: height
+  )
+
 proc validateMapRect(name: string, rect: MapRect, width, height: int) =
   ## Raises if one map rectangle is outside the map.
   if rect.w <= 0 or rect.h <= 0:
@@ -695,11 +807,96 @@ proc validateMap(gameMap: CrewriftMap) =
       gameMap.height
     )
 
+proc loadResourceCrewriftMap(resolvedPath: string): CrewriftMap =
+  ## Loads a Crewrift map from a CSS-like resource file.
+  let
+    baseDir = resolvedPath.splitFile().dir
+    asepritePath = resolvedPath.changeFileExt(".aseprite")
+  if not fileExists(asepritePath):
+    raise newException(
+      CrewriftError,
+      "Resource map is missing matching aseprite: " & asepritePath
+    )
+
+  let
+    sprite = readAseprite(asepritePath)
+    rects = loadResourceRects(resolvedPath)
+  if rects.len == 0:
+    raise newException(
+      CrewriftError,
+      "Resource map did not contain any rectangles: " & resolvedPath
+    )
+
+  result.name = resolvedPath.splitFile().name
+  result.path = resolvedPath
+  result.asepritePath = resolveGamePath(asepritePath, baseDir)
+  result.width = sprite.header.width
+  result.height = sprite.header.height
+  result.mapLayer = 0
+  result.walkLayer = 1
+  result.wallLayer = 2
+
+  var
+    taskRects: seq[ResourceRect] = @[]
+    ventCounts: Table[string, int]
+  for rect in rects:
+    if rect.name.isTaskResource():
+      taskRects.add(rect)
+    elif rect.name.isVentResource():
+      result.vents.add Vent(
+        x: rect.x,
+        y: rect.y,
+        w: rect.w,
+        h: rect.h,
+        group: rect.name.ventGroupChar(),
+        groupIndex: ventCounts.nextVentGroupIndex(rect.name)
+      )
+    elif rect.name.isRoomResource():
+      result.rooms.add Room(
+        name: rect.name,
+        x: rect.x,
+        y: rect.y,
+        w: rect.w,
+        h: rect.h
+      )
+
+  for i, rect in taskRects:
+    result.tasks.add TaskStation(
+      name: taskNameForResource(result.rooms, rect, i),
+      x: rect.x,
+      y: rect.y,
+      w: rect.w,
+      h: rect.h
+    )
+
+  let homeRoom =
+    block:
+      var index = 0
+      for i, room in result.rooms:
+        if room.name.resourceNameKey() == "bridge":
+          index = i
+          break
+      index
+  if result.rooms.len > 0:
+    result.home = result.rooms[homeRoom].centerPoint()
+  else:
+    result.home = MapPoint(x: result.width div 2, y: result.height div 2)
+  result.button = centeredMapRect(
+    result.home,
+    28,
+    34,
+    result.width,
+    result.height
+  )
+  result.validateMap()
+
 proc loadCrewriftMap*(path = ""): CrewriftMap =
-  ## Loads a Crewrift map JSON file.
+  ## Loads a Crewrift map file.
   let
     resolvedPath = resolveMapPath(path)
     baseDir = resolvedPath.splitFile().dir
+  if resolvedPath.splitFile().ext.toLowerAscii() == ".resources":
+    return loadResourceCrewriftMap(resolvedPath)
   var node: JsonNode
   try:
     node = parseJson(readFile(resolvedPath))
@@ -930,7 +1127,7 @@ proc chatLineCount*(font: PixelFont, text: string): int =
 
 proc chatMessageHeight*(font: PixelFont, text: string): int =
   ## Returns the pixel height for one chat message row.
-  max(SpriteSize, font.chatLineCount(text) * TextLineHeight) + 1
+  max(VoteActorSize, font.chatLineCount(text) * TextLineHeight) + 1
 
 proc defaultGameConfig*(): GameConfig =
   ## Returns the default Crewrift gameplay config.
@@ -3164,9 +3361,9 @@ proc writeSpritePlayerObservationUiPlayers(
         shown.add(i)
     if shown.len > 0:
       let
-        cellW = 16
-        cellH = 18
-        cols = min(shown.len, 8)
+        cellW = VoteCellW
+        cellH = VoteCellH
+        cols = min(shown.len, VoteColsMax)
         totalW = cols * cellW
         startX = (ScreenWidth - totalW) div 2
         startY = 42
@@ -3175,7 +3372,7 @@ proc writeSpritePlayerObservationUiPlayers(
           i = shown[slot]
           col = slot mod cols
           row = slot div cols
-          sx = startX + col * cellW + (cellW - SpriteSize) div 2
+          sx = startX + col * cellW
           sy = startY + row * cellH
         var flags = RenderPlayerPresent or RenderPlayerAlive
         sim.writeSpritePlayerObservationPlayerSlotAt(
@@ -3189,20 +3386,20 @@ proc writeSpritePlayerObservationUiPlayers(
         )
   of Voting:
     let
-      cellW = 16
-      cellH = 17
-      cols = min(n, 8)
+      cellW = VoteCellW
+      cellH = VoteCellH
+      cols = min(n, VoteColsMax)
       totalW = cols * cellW
       startX = (ScreenWidth - totalW) div 2
-      startY = 2
+      startY = VoteStartY
     for i in 0 ..< n:
       let
         col = i mod cols
         row = i div cols
         cx = startX + col * cellW
         cy = startY + row * cellH
-        sx = cx + (cellW - SpriteSize) div 2
-        sy = cy + 1
+        sx = cx
+        sy = cy
       var flags = RenderPlayerPresent
       if sim.players[i].alive:
         flags = flags or RenderPlayerAlive
@@ -3217,8 +3414,8 @@ proc writeSpritePlayerObservationUiPlayers(
         playerIndex,
         ej,
         0,
-        ScreenWidth div 2 - SpriteSize div 2,
-        ScreenHeight div 2 - SpriteSize div 2,
+        ScreenWidth div 2 - VoteActorSize div 2,
+        ScreenHeight div 2 - VoteActorSize div 2,
         flags,
         output
       )
@@ -3236,7 +3433,7 @@ proc writeSpritePlayerObservationUiPlayers(
         baseX = min(col, 1) * colW
         y = startY + row * rowH
         iconX = baseX + iconOffsetX
-        iconY = y + (rowH - SpriteSize) div 2
+        iconY = y + (rowH - VoteActorSize) div 2
       var flags = RenderPlayerPresent
       if sim.players[i].alive:
         flags = flags or RenderPlayerAlive

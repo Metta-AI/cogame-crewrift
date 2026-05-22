@@ -124,10 +124,13 @@ const
     "dark navy",
     "black"
   ]
-  VoteCellW = 16
-  VoteCellH = 17
-  VoteStartY = 2
-  VoteSkipW = 28
+  VoteActorSize = sim.VoteActorSize
+  VoteCellW = sim.VoteCellW
+  VoteCellH = sim.VoteCellH
+  VoteColsMax = sim.VoteColsMax
+  VoteStartY = sim.VoteStartY
+  VoteSkipW = sim.VoteSkipW
+  VoteSkipCursorH = sim.VoteSkipCursorH
   VoteUnknown = -1
   VoteSkip = -2
   VoteBlackMarker = 12'u8
@@ -492,19 +495,28 @@ proc roomName(bot: Bot): string =
   let
     px = bot.playerWorldX() + CollisionW div 2
     py = bot.playerWorldY() + CollisionH div 2
-  for room in bot.sim.rooms:
-    if px >= room.x and px < room.x + room.w and
-        py >= room.y and py < room.y + room.h:
-      return room.name
-  "unknown"
+    room = nearestRoomAt(bot.sim.rooms, px, py)
+  if not room.found:
+    return "unknown"
+  if room.inside:
+    room.name
+  else:
+    "near " & room.name
 
-proc roomNameAt(bot: Bot, x, y: int): string =
-  ## Returns the room containing one world point.
-  for room in bot.sim.rooms:
-    if x >= room.x and x < room.x + room.w and
-        y >= room.y and y < room.y + room.h:
-      return room.name
-  "unknown"
+proc roomAt(
+  bot: Bot,
+  x, y: int
+): tuple[found: bool, inside: bool, name: string] =
+  ## Returns the containing or nearest room for one world point.
+  nearestRoomAt(bot.sim.rooms, x, y)
+
+proc chatRoomName(name: string): string =
+  ## Returns a compact room name for chat.
+  for ch in name:
+    if ch in {'A' .. 'Z'}:
+      result.add(char(ord(ch) - ord('A') + ord('a')))
+    elif ch in {'a' .. 'z'} or ch in {'0' .. '9'}:
+      result.add(ch)
 
 proc taskCenter(task: TaskStation): tuple[x: int, y: int] =
   ## Returns the center pixel for a task station.
@@ -1565,7 +1577,7 @@ proc protocolVoteCellAt(count, x, y: int): int =
   if count <= 0:
     return VoteUnknown
   let
-    cols = min(count, 8)
+    cols = min(count, VoteColsMax)
     totalW = cols * VoteCellW
     startX = (ScreenWidth - totalW) div 2
   for i in 0 ..< count:
@@ -2139,7 +2151,7 @@ proc voteGridLayout(
   count: int
 ): tuple[cols: int, rows: int, startX: int, skipX: int, skipY: int] =
   ## Returns the fixed voting grid geometry for a player count.
-  result.cols = min(count, 8)
+  result.cols = min(count, VoteColsMax)
   result.rows = (count + result.cols - 1) div result.cols
   let totalW = result.cols * VoteCellW
   result.startX = (ScreenWidth - totalW) div 2
@@ -2205,7 +2217,7 @@ proc voteCellSelected(bot: Bot, count, index: int): bool =
   for bx in 0 ..< VoteCellW:
     if bot.unpacked[(cell.y - 1) * ScreenWidth + cell.x + bx] == 2'u8:
       inc hits
-    if bot.unpacked[(cell.y + VoteCellH - 2) * ScreenWidth + cell.x + bx] ==
+    if bot.unpacked[(cell.y + VoteActorSize) * ScreenWidth + cell.x + bx] ==
         2'u8:
       inc hits
   hits >= VoteCellW
@@ -2286,7 +2298,7 @@ proc usefulChatLine(line: string): bool =
 
 proc voteChatY(count: int): int =
   ## Returns the top y coordinate of the voting chat panel.
-  voteGridLayout(count).skipY + 10
+  voteGridLayout(count).skipY + VoteSkipCursorH + 2
 
 proc voteChatSpeakerAt(bot: Bot, y: int): int =
   ## Reads one voting chat speaker icon color at a y coordinate.
@@ -2303,7 +2315,7 @@ proc readVoteChatSpeakers(bot: Bot, count: int): seq[VoteChatSpeaker] =
     let colorIndex = bot.voteChatSpeakerAt(y)
     if colorIndex == VoteUnknown:
       continue
-    if result.len > 0 and abs(result[^1].y - y) < SpriteSize div 2:
+    if result.len > 0 and abs(result[^1].y - y) < VoteActorSize div 2:
       continue
     result.add VoteChatSpeaker(
       colorIndex: colorIndex,
@@ -2505,7 +2517,7 @@ proc parseVotingCandidate(
     bot.parseVoteDotsForTarget(
       i,
       cell.x + 1,
-      cell.y + bot.playerSprite.height + 2
+      cell.y + VoteActorSize + 1
     )
   if bot.voteSkipSelected(layout.skipX, layout.skipY):
     bot.voteCursor = count
@@ -3708,12 +3720,14 @@ proc suspectSummary(bot: Bot): string =
 
 proc bodyRoomMessage(bot: Bot, x, y: int): string =
   ## Builds a short chat line that names a body's room.
-  let room = bot.roomNameAt(x + CollisionW div 2, y + CollisionH div 2)
+  let room = bot.roomAt(x + CollisionW div 2, y + CollisionH div 2)
   result =
-    if room == "unknown":
+    if not room.found:
       "body"
+    elif room.inside:
+      "body in " & chatRoomName(room.name)
     else:
-      "body in " & room
+      "body near " & chatRoomName(room.name)
   if bot.bodySusColor != VoteUnknown:
     result.add(" sus ")
     result.add(playerColorName(bot.bodySusColor))
@@ -3777,8 +3791,12 @@ proc voteChatSpeakerName(line: VoteChatLine): string =
 proc voteBodyLocationText(text: string): string =
   ## Extracts a visible body location from normalized chat text.
   let normalized = text.normalizeChatText()
-  let marker = "body in "
-  let startIndex = normalized.find(marker)
+  var
+    marker = "body in "
+    startIndex = normalized.find(marker)
+  if startIndex < 0:
+    marker = "body near "
+    startIndex = normalized.find(marker)
   if startIndex >= 0:
     let
       bodyStart = startIndex + marker.len

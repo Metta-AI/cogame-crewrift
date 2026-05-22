@@ -79,7 +79,7 @@ const
   SpritePlayerRemainingObjectId = 5008
   SpritePlayerProgressObjectId = 5009
   SpritePlayerShadowSpriteId = 5010
-  SpritePlayerShadowObjectId = 5010
+  SpritePlayerShadowObjectId = 13000
   SpritePlayerShadowZ = -32767
   SpritePlayerVoteCursorSpriteId = 5011
   SpritePlayerVoteSkipCursorSpriteId = 5012
@@ -947,7 +947,7 @@ proc addVisibleVoteChatIcons(
       message = sim.chatMessages[visible[j]]
       lineCount = sim.asciiSprites.chatLineCount(message.text)
       messageH = sim.asciiSprites.chatMessageHeight(message.text)
-      iconY = rowY + max(0, (lineCount * TextLineHeight - CrewSpriteSize) div 2)
+      iconY = rowY + max(0, (lineCount * TextLineHeight - VoteActorSize) div 2)
       objectId = ProtocolChatIconObjectBase + j
       spriteId = crewPlayerSpriteId(
         playerColorIndex(message.color),
@@ -1010,15 +1010,15 @@ proc interstitialTextItems(
     let n = sim.players.len
     if n > 0:
       let
-        cellH = 17
-        cols = min(n, 8)
+        cellH = VoteCellH
+        cols = min(n, VoteColsMax)
         rows = (n + cols - 1) div cols
-        startY = 2
-        skipW = 28
+        startY = VoteStartY
+        skipW = VoteSkipW
         skipY = startY + rows * cellH + 1
         skipX = (ScreenWidth - skipW) div 2
       result.addTextItem(skipX, skipY, ["SKIP"])
-      sim.addVisibleVoteChatText(result, skipY + 10)
+      sim.addVisibleVoteChatText(result, skipY + VoteSkipCursorH + 2)
   of VoteResult:
     let ej = sim.voteState.ejectedPlayer
     if ej < 0 or ej >= sim.players.len:
@@ -1102,12 +1102,12 @@ proc addProtocolChatSprites(
   if n == 0:
     return
   let
-    cellH = 17
-    cols = min(n, 8)
+    cellH = VoteCellH
+    cols = min(n, VoteColsMax)
     rows = (n + cols - 1) div cols
-    startY = 2
+    startY = VoteStartY
     skipY = startY + rows * cellH + 1
-  sim.addVisibleVoteChatIcons(currentIds, packet, layer, skipY + 10)
+  sim.addVisibleVoteChatIcons(currentIds, packet, layer, skipY + VoteSkipCursorH + 2)
 
 proc buildVoteProgressSprite(sim: SimServer): seq[uint8] {.measure.} =
   ## Builds the voting countdown bar as a small sprite.
@@ -1143,15 +1143,15 @@ proc addProtocolVoteUiSprites(
   if n == 0:
     return
   let
-    cellW = CrewSpriteSize + 2
-    cellH = CrewSpriteSize + 4
-    cols = min(n, 7)
+    cellW = VoteCellW
+    cellH = VoteCellH
+    cols = min(n, VoteColsMax)
     rows = (n + cols - 1) div cols
     totalW = cols * cellW
     startX = (ScreenWidth - totalW) div 2
-    startY = 2
+    startY = VoteStartY
     skipY = startY + rows * cellH + 1
-    skipW = 28
+    skipW = VoteSkipW
     skipX = (ScreenWidth - skipW) div 2
   if playerIndex >= 0 and playerIndex < sim.voteState.cursor.len:
     let cursor = sim.voteState.cursor[playerIndex]
@@ -1200,7 +1200,7 @@ proc addProtocolVoteUiSprites(
       if sim.voteState.votes[voter] == target:
         let
           dotX = cx + 1 + (voterRow mod 8) * 2
-          dotY = cy + SpriteSize + 2 + (voterRow div 8)
+          dotY = cy + VoteActorSize + 1 + (voterRow div 8)
           objectId = SpritePlayerVoteDotObjectBase + target * MaxPlayers +
             voter
           colorIndex = playerColorIndex(sim.players[voter].color)
@@ -1233,7 +1233,7 @@ proc addProtocolVoteUiSprites(
       )
       inc skipVoterRow
   let
-    chatY = skipY + 10
+    chatY = skipY + VoteSkipCursorH + 2
     chatH = ScreenHeight - chatY - 3
   if chatH > 0:
     currentIds.add(SpritePlayerVoteChatBgObjectId)
@@ -1285,12 +1285,12 @@ proc addProtocolVoteActorSprites(
   if n == 0:
     return
   let
-    cellW = 16
-    cellH = 17
-    cols = min(n, 8)
+    cellW = VoteCellW
+    cellH = VoteCellH
+    cols = min(n, VoteColsMax)
     totalW = cols * cellW
     startX = (ScreenWidth - totalW) div 2
-    startY = 2
+    startY = VoteStartY
   for idx in 0 ..< n:
     let
       player = sim.players[idx]
@@ -1526,17 +1526,17 @@ proc addSpriteProtocolInterstitialSprites(
   packet.addSpriteChanged(
     spriteDefs,
     SpritePlayerVoteCursorSpriteId,
-    16,
-    17,
-    buildVoteBorderSprite(16, 17),
+    VoteCellW,
+    VoteActorSize + 2,
+    buildVoteBorderSprite(VoteCellW, VoteActorSize + 2),
     "vote cursor"
   )
   packet.addSpriteChanged(
     spriteDefs,
     SpritePlayerVoteSkipCursorSpriteId,
-    30,
-    8,
-    buildVoteBorderSprite(30, 8),
+    VoteSkipCursorW,
+    VoteSkipCursorH,
+    buildVoteBorderSprite(VoteSkipCursorW, VoteSkipCursorH),
     "vote skip cursor"
   )
   for i in 0 ..< PlayerColors.len:
@@ -2797,6 +2797,8 @@ proc buildSpriteProtocolUpdates*(
   nextState.povJoinOrder = nextState.selectedJoinOrder
   if povActive:
     var povState: PlayerViewerState
+    let povClearsObjects =
+      nextState.povState.isNil or not nextState.povState.initialized
     result = sim.buildSpriteProtocolPlayerUpdates(
       playerIndex,
       nextState.povState,
@@ -2810,9 +2812,10 @@ proc buildSpriteProtocolUpdates*(
       result,
       nextState.selectedJoinOrder
     )
-    for objectId in state.objectIds:
-      if objectId notin currentIds:
-        result.addDeleteObject(objectId)
+    if not povClearsObjects:
+      for objectId in state.objectIds:
+        if objectId notin currentIds:
+          result.addDeleteObject(objectId)
     nextState.objectIds = currentIds
     return
   if not nextState.initialized:

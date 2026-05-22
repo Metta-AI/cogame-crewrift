@@ -7,10 +7,13 @@ import
   pixelfonts
 
 const
-  VoteReaderCellW* = 16
-  VoteReaderCellH* = 17
-  VoteReaderStartY* = 2
-  VoteReaderSkipW* = 28
+  VoteReaderActorSize* = VoteActorSize
+  VoteReaderCellW* = VoteCellW
+  VoteReaderCellH* = VoteCellH
+  VoteReaderColsMax* = VoteColsMax
+  VoteReaderStartY* = VoteStartY
+  VoteReaderSkipW* = VoteSkipW
+  VoteReaderSkipCursorH* = VoteSkipCursorH
   VoteReaderUnknown* = -1
   VoteReaderSkip* = -2
   VoteReaderBlackMarker* = 12'u8
@@ -263,7 +266,7 @@ proc voteReaderGridLayout*(
   count: int
 ): tuple[cols, rows, startX, skipX, skipY: int] =
   ## Returns the vote screen grid geometry for one player count.
-  result.cols = min(count, 8)
+  result.cols = min(count, VoteReaderColsMax)
   if result.cols <= 0:
     return
   result.rows = (count + result.cols - 1) div result.cols
@@ -345,7 +348,7 @@ proc cellSelected(frame: openArray[uint8], count, index: int): bool =
       inc hits
     if frame.framePixel(
       cell.x + bx,
-      cell.y + VoteReaderCellH - 2
+      cell.y + VoteReaderActorSize
     ) == WhiteTextIndex:
       inc hits
   hits >= VoteReaderCellW
@@ -484,7 +487,7 @@ proc nearestChatIcon(
     bestDistance = high(int)
   for i, icon in icons:
     let
-      iconCenter = icon.y + SpriteSize div 2
+      iconCenter = icon.y + VoteReaderActorSize div 2
       distance = abs(iconCenter - lineCenter)
     if distance < bestDistance:
       best = i
@@ -634,7 +637,7 @@ proc parseVoteCandidate(
       result,
       i,
       cell.x + 1,
-      cell.y + playerSprite.height + 2
+      cell.y + VoteReaderActorSize + 1
     )
   if frame.skipSelected(layout.skipX, layout.skipY):
     result.cursor = count
@@ -647,7 +650,7 @@ proc parseVoteCandidate(
   result.chat = frame.parseVoteChat(
     font,
     playerSprite,
-    layout.skipY + 10
+    layout.skipY + VoteReaderSkipCursorH + 2
   )
   for entry in result.chat:
     if result.chatText.len > 0:
