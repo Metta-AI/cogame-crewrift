@@ -21,6 +21,8 @@ const
   MapWidth* = 952
   MapHeight* = 534
   SpriteSize* = 12
+  CrewSpriteSize* = 16
+  CrewSpriteVariants* = 8
   CollisionW* = 1
   CollisionH* = 1
   SpriteDrawOffX* = 2
@@ -90,11 +92,11 @@ const
   ZoomableLayerFlag* = 1
   UiLayerFlag* = 2
   PlayerSpriteBase* = 100
-  GhostSpriteBase* = 300
+  GhostSpriteBase* = 400
   BodySpriteBase* = 500
   TaskSpriteId* = 700
   SelectedPlayerSpriteBase* = 800
-  SelectedGhostSpriteBase* = 900
+  SelectedGhostSpriteBase* = 1100
   SelectedTextSpriteId* = 4000
   SelectedViewportSpriteId* = 4001
   PlayerObjectBase* = 1000
@@ -224,7 +226,12 @@ type
     x*, y*: int
     color*: uint8
 
+  CrewSprite* = ref object
+    width*, height*: int
+    rgba*: seq[uint8]
+
   ChatMessage* = object
+    slotId*: int
     color*: uint8
     text*: string
 
@@ -326,7 +333,7 @@ type
     chatMessages*: seq[ChatMessage]
     rewardAccounts*: seq[RewardAccount]
     bodies*: seq[Body]
-    playerSprite*: Sprite
+    crewSprites*: seq[CrewSprite]
     bodySprite*: Sprite
     boneSprite*: Sprite
     killButtonSprite*: Sprite
@@ -477,6 +484,64 @@ proc loadSpriteSheet*(): Image =
     readAsepriteImage(path)
   else:
     readImage(path)
+
+proc crewSheetPath(): string =
+  ## Returns the crew sprite sheet path.
+  let path = clientDataDir() / "crew.aseprite"
+  if fileExists(path):
+    return path
+  gameDir() / "data" / "crew.aseprite"
+
+proc crewSpriteOffset*(sprite: CrewSprite, x, y: int): int =
+  ## Returns the RGBA byte offset for one crew sprite pixel.
+  (y * sprite.width + x) * 4
+
+proc crewPixelIsTint*(r, g, b, a: uint8): bool =
+  ## Returns true when one crew source pixel is pure tint white.
+  a >= 20'u8 and r == 255'u8 and g == 255'u8 and b == 255'u8
+
+proc crewPixelIsShade*(r, g, b, a: uint8): bool =
+  ## Returns true when one crew source pixel is the darker tint marker.
+  a >= 20'u8 and r == 0x9b'u8 and g == 0xad'u8 and b == 0xb7'u8
+
+proc crewSpriteFromImage(image: Image, index: int): CrewSprite =
+  ## Extracts one raw 16x16 crew sprite from the first row.
+  result = CrewSprite(
+    width: CrewSpriteSize,
+    height: CrewSpriteSize,
+    rgba: newSeq[uint8](CrewSpriteSize * CrewSpriteSize * 4)
+  )
+  let baseX = index * CrewSpriteSize
+  for y in 0 ..< CrewSpriteSize:
+    for x in 0 ..< CrewSpriteSize:
+      let
+        pixel = image[baseX + x, y]
+        offset = result.crewSpriteOffset(x, y)
+      result.rgba[offset] = pixel.r
+      result.rgba[offset + 1] = pixel.g
+      result.rgba[offset + 2] = pixel.b
+      result.rgba[offset + 3] = pixel.a
+
+proc loadCrewSprites*(): seq[CrewSprite] =
+  ## Loads the first eight 16x16 crew sprites.
+  let
+    path = crewSheetPath()
+    image = readAsepriteImage(path)
+  if image.width < CrewSpriteSize * CrewSpriteVariants or
+      image.height < CrewSpriteSize:
+    raise newException(
+      CrewriftError,
+      "Crew sprite sheet must contain eight 16x16 sprites: " & path
+    )
+  for i in 0 ..< CrewSpriteVariants:
+    result.add(image.crewSpriteFromImage(i))
+
+proc crewVariantIndex*(slotId: int): int =
+  ## Returns the crew sprite variant for one player slot.
+  if CrewSpriteVariants <= 0:
+    return 0
+  ((slotId mod CrewSpriteVariants) + CrewSpriteVariants) mod
+    CrewSpriteVariants
 
 proc requireObject(node: JsonNode, name: string): JsonNode =
   ## Reads one required JSON object field.
@@ -2319,6 +2384,7 @@ proc addVotingChat*(sim: var SimServer, playerIndex: int, message: string) =
   while sim.chatMessages.len >= VoteChatVisibleMessages:
     sim.chatMessages.delete(0)
   sim.chatMessages.add ChatMessage(
+    slotId: sim.players[playerIndex].joinOrder,
     color: sim.players[playerIndex].color,
     text: text
   )
@@ -3339,9 +3405,7 @@ proc initSimServer*(config: GameConfig): SimServer =
   result.asciiSprites = loadAsciiSprites(gameDir() / "tiny5.aseprite")
 
   let sheet = loadSpriteSheet()
-  result.playerSprite = spriteFromImage(
-    sheet.subImage(0, 0, SpriteSize, SpriteSize)
-  )
+  result.crewSprites = loadCrewSprites()
   result.bodySprite = spriteFromImage(
     sheet.subImage(SpriteSize, 0, SpriteSize, SpriteSize)
   )

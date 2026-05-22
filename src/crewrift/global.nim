@@ -202,6 +202,48 @@ proc newRgbaPixels(width, height: int): seq[uint8] =
   ## Allocates a transparent RGBA sprite buffer.
   newSeq[uint8](width * height * 4)
 
+proc putRawRgbaPixel(
+  pixels: var seq[uint8],
+  pixelIndex: int,
+  r, g, b, a: uint8
+) =
+  ## Writes one true-color RGBA pixel.
+  let offset = pixelIndex * 4
+  pixels[offset] = r
+  pixels[offset + 1] = g
+  pixels[offset + 2] = b
+  pixels[offset + 3] = a
+
+proc crewSpriteIsSolid(sprite: CrewSprite, x, y: int, flipH: bool): bool =
+  ## Returns true when one crew sprite pixel has visible alpha.
+  let srcX = if flipH: sprite.width - 1 - x else: x
+  if srcX < 0 or srcX >= sprite.width or y < 0 or y >= sprite.height:
+    return false
+  sprite.rgba[sprite.crewSpriteOffset(srcX, y) + 3] >= 20'u8
+
+proc putCrewPixel(
+  pixels: var seq[uint8],
+  pixelIndex: int,
+  sprite: CrewSprite,
+  x, y: int,
+  tint: uint8
+) =
+  ## Writes one selectively tinted true-color crew pixel.
+  let
+    sourceOffset = sprite.crewSpriteOffset(x, y)
+    r = sprite.rgba[sourceOffset]
+    g = sprite.rgba[sourceOffset + 1]
+    b = sprite.rgba[sourceOffset + 2]
+    a = sprite.rgba[sourceOffset + 3]
+  if a < 20'u8:
+    return
+  if crewPixelIsTint(r, g, b, a):
+    pixels.putRgbaPixel(pixelIndex, tint)
+  elif crewPixelIsShade(r, g, b, a):
+    pixels.putRgbaPixel(pixelIndex, ShadowMap[tint and 0x0f])
+  else:
+    pixels.putRawRgbaPixel(pixelIndex, r, g, b, a)
+
 proc transportSheet(): Sprite =
   ## Returns the cached transport icon sheet.
   if TransportSheet.width == 0:
@@ -220,6 +262,25 @@ proc playerColorName(index: int): string =
   if index >= 0 and index < PlayerColorNames.len:
     return PlayerColorNames[index]
   "unknown"
+
+proc crewSpriteForSlot(sim: SimServer, slotId: int): CrewSprite =
+  ## Returns the crew sprite assigned to one player slot.
+  sim.crewSprites[crewVariantIndex(slotId)]
+
+proc crewPlayerSpriteId(colorIndex, slotId: int, flipH: bool): int =
+  ## Returns the sprite id for one living crew variant.
+  let
+    variant = crewVariantIndex(slotId)
+    side = if flipH: 1 else: 0
+  PlayerSpriteBase + (colorIndex * CrewSpriteVariants + variant) * 2 + side
+
+proc selectedCrewPlayerSpriteId(colorIndex, slotId: int, flipH: bool): int =
+  ## Returns the selected sprite id for one living crew variant.
+  let
+    variant = crewVariantIndex(slotId)
+    side = if flipH: 1 else: 0
+  SelectedPlayerSpriteBase + (colorIndex * CrewSpriteVariants + variant) * 2 +
+    side
 
 proc addU8(packet: var seq[uint8], value: uint8) =
   ## Appends one unsigned byte to a global protocol packet.
@@ -482,6 +543,46 @@ proc buildSpriteProtocolActorSprite(
       result.putRgbaPixel(
         outIndex(x + 1, y + 1),
         actorColor(colorIndex, tint)
+      )
+
+proc buildCrewProtocolActorSprite(
+  sprite: CrewSprite,
+  tint: uint8,
+  flipH: bool,
+  selected: bool = false
+): seq[uint8] {.measure.} =
+  ## Builds a selectively tinted true-color crew sprite.
+  let
+    outWidth = sprite.width + 2
+    outHeight = sprite.height + 2
+    outline = if selected: 8'u8 else: OutlineColor
+  result = newRgbaPixels(outWidth, outHeight)
+
+  proc outIndex(x, y: int): int =
+    y * outWidth + x
+
+  if selected:
+    for y in -1 .. sprite.height:
+      for x in -1 .. sprite.width:
+        if sprite.crewSpriteIsSolid(x, y, flipH):
+          continue
+        let adjacent =
+          sprite.crewSpriteIsSolid(x - 1, y, flipH) or
+          sprite.crewSpriteIsSolid(x + 1, y, flipH) or
+          sprite.crewSpriteIsSolid(x, y - 1, flipH) or
+          sprite.crewSpriteIsSolid(x, y + 1, flipH)
+        if adjacent:
+          result.putRgbaPixel(outIndex(x + 1, y + 1), outline)
+
+  for y in 0 ..< sprite.height:
+    for x in 0 ..< sprite.width:
+      let srcX = if flipH: sprite.width - 1 - x else: x
+      result.putCrewPixel(
+        outIndex(x + 1, y + 1),
+        sprite,
+        srcX,
+        y,
+        tint
       )
 
 proc buildSpriteProtocolBodySprite(
@@ -846,9 +947,13 @@ proc addVisibleVoteChatIcons(
       message = sim.chatMessages[visible[j]]
       lineCount = sim.asciiSprites.chatLineCount(message.text)
       messageH = sim.asciiSprites.chatMessageHeight(message.text)
-      iconY = rowY + max(0, (lineCount * TextLineHeight - SpriteSize) div 2)
+      iconY = rowY + max(0, (lineCount * TextLineHeight - CrewSpriteSize) div 2)
       objectId = ProtocolChatIconObjectBase + j
-      spriteId = PlayerSpriteBase + playerColorIndex(message.color) * 2
+      spriteId = crewPlayerSpriteId(
+        playerColorIndex(message.color),
+        message.slotId,
+        false
+      )
     currentIds.add(objectId)
     packet.addObject(
       objectId,
@@ -1038,9 +1143,9 @@ proc addProtocolVoteUiSprites(
   if n == 0:
     return
   let
-    cellW = 16
-    cellH = 17
-    cols = min(n, 8)
+    cellW = CrewSpriteSize + 2
+    cellH = CrewSpriteSize + 4
+    cols = min(n, 7)
     rows = (n + cols - 1) div cols
     totalW = cols * cellW
     startX = (ScreenWidth - totalW) div 2
@@ -1193,13 +1298,13 @@ proc addProtocolVoteActorSprites(
       row = idx div cols
       cx = startX + col * cellW
       cy = startY + row * cellH
-      spriteX = cx + (cellW - SpriteSize) div 2
+      spriteX = cx + (cellW - CrewSpriteSize) div 2
       spriteY = cy + 1
       colorIndex = playerColorIndex(player.color)
       objectId = ProtocolVoteIconObjectBase + idx
       spriteId =
         if player.alive:
-          PlayerSpriteBase + colorIndex * 2
+          crewPlayerSpriteId(colorIndex, player.joinOrder, false)
         else:
           BodySpriteBase + colorIndex
     currentIds.add(objectId)
@@ -1214,7 +1319,11 @@ proc addProtocolVoteActorSprites(
 
 proc playerIconSpriteId(player: Player): int =
   ## Returns the default right-facing player icon sprite id.
-  PlayerSpriteBase + playerColorIndex(player.color) * 2
+  crewPlayerSpriteId(
+    playerColorIndex(player.color),
+    player.joinOrder,
+    false
+  )
 
 proc addProtocolLobbyActorSprites(
   sim: SimServer,
@@ -1225,13 +1334,19 @@ proc addProtocolLobbyActorSprites(
   ## Adds separate player sprites for the lobby interstitial.
   if sim.phase != Lobby:
     return
-  let startY = sim.lobbyIconStartY()
+  let
+    cols = max(1, min(sim.players.len, 6))
+    cellW = CrewSpriteSize + 2
+    cellH = CrewSpriteSize + 2
+    totalW = cols * cellW
+    startX = (ScreenWidth - totalW) div 2
+    startY = sim.lobbyIconStartY()
   for i in 0 ..< sim.players.len:
     let
-      col = i mod 6
-      row = i div 6
-      sx = 5 + col * 9
-      sy = startY + row * 9
+      col = i mod cols
+      row = i div cols
+      sx = startX + col * cellW
+      sy = startY + row * cellH
       objectId = ProtocolLobbyIconObjectBase + i
     currentIds.add(objectId)
     packet.addObject(
@@ -1266,9 +1381,9 @@ proc addProtocolRoleRevealActorSprites(
   if shown.len == 0:
     return
   let
-    cellW = 16
-    cellH = 18
-    cols = min(shown.len, 8)
+    cellW = CrewSpriteSize + 2
+    cellH = CrewSpriteSize + 4
+    cols = min(shown.len, 7)
     totalW = cols * cellW
     startX = (ScreenWidth - totalW) div 2
     startY = 42
@@ -1277,7 +1392,7 @@ proc addProtocolRoleRevealActorSprites(
       playerIdx = shown[slot]
       col = slot mod cols
       row = slot div cols
-      spriteX = startX + col * cellW + (cellW - SpriteSize) div 2
+      spriteX = startX + col * cellW + (cellW - CrewSpriteSize) div 2
       spriteY = startY + row * cellH
       objectId = ProtocolRoleIconObjectBase + slot
     currentIds.add(objectId)
@@ -1303,8 +1418,8 @@ proc addProtocolVoteResultActorSprites(
   if ejected < 0 or ejected >= sim.players.len:
     return
   let
-    sx = ScreenWidth div 2 - SpriteSize div 2
-    sy = ScreenHeight div 2 - SpriteSize div 2
+    sx = ScreenWidth div 2 - CrewSpriteSize div 2
+    sy = ScreenHeight div 2 - CrewSpriteSize div 2
   currentIds.add(ProtocolResultIconObjectBase)
   packet.addObject(
     ProtocolResultIconObjectBase,
@@ -1338,7 +1453,7 @@ proc addProtocolGameOverActorSprites(
       baseX = min(col, 1) * colW
       y = startY + row * rowH
       iconX = baseX + iconOffsetX
-      iconY = y + (rowH - SpriteSize) div 2
+      iconY = y + (rowH - CrewSpriteSize) div 2
       objectId = ProtocolGameOverIconObjectBase + i
     currentIds.add(objectId)
     packet.addObject(
@@ -1487,17 +1602,65 @@ proc buildSpriteProtocolInit(
     )
   sim.addSpriteProtocolInterstitialSprites(spriteDefs, result)
   for i in 0 ..< PlayerColors.len:
+    for variant in 0 ..< CrewSpriteVariants:
+      let
+        crew = sim.crewSprites[variant]
+        playerRight = buildCrewProtocolActorSprite(
+          crew,
+          PlayerColors[i],
+          false
+        )
+        playerLeft = buildCrewProtocolActorSprite(
+          crew,
+          PlayerColors[i],
+          true
+        )
+        selectedPlayerRight = buildCrewProtocolActorSprite(
+          crew,
+          PlayerColors[i],
+          false,
+          true
+        )
+        selectedPlayerLeft = buildCrewProtocolActorSprite(
+          crew,
+          PlayerColors[i],
+          true,
+          true
+        )
+      result.addSpriteChanged(
+        spriteDefs,
+        crewPlayerSpriteId(i, variant, false),
+        crew.width + 2,
+        crew.height + 2,
+        playerRight,
+        "player " & playerColorName(i) & " right"
+      )
+      result.addSpriteChanged(
+        spriteDefs,
+        crewPlayerSpriteId(i, variant, true),
+        crew.width + 2,
+        crew.height + 2,
+        playerLeft,
+        "player " & playerColorName(i) & " left"
+      )
+      result.addSpriteChanged(
+        spriteDefs,
+        selectedCrewPlayerSpriteId(i, variant, false),
+        crew.width + 2,
+        crew.height + 2,
+        selectedPlayerRight,
+        "selected player " & playerColorName(i) & " right"
+      )
+      result.addSpriteChanged(
+        spriteDefs,
+        selectedCrewPlayerSpriteId(i, variant, true),
+        crew.width + 2,
+        crew.height + 2,
+        selectedPlayerLeft,
+        "selected player " & playerColorName(i) & " left"
+      )
+
     let
-      playerRight = buildSpriteProtocolActorSprite(
-        sim.playerSprite,
-        PlayerColors[i],
-        false
-      )
-      playerLeft = buildSpriteProtocolActorSprite(
-        sim.playerSprite,
-        PlayerColors[i],
-        true
-      )
       ghostRight = buildSpriteProtocolActorSprite(
         sim.ghostSprite,
         PlayerColors[i],
@@ -1506,18 +1669,6 @@ proc buildSpriteProtocolInit(
       ghostLeft = buildSpriteProtocolActorSprite(
         sim.ghostSprite,
         PlayerColors[i],
-        true
-      )
-      selectedPlayerRight = buildSpriteProtocolActorSprite(
-        sim.playerSprite,
-        PlayerColors[i],
-        false,
-        true
-      )
-      selectedPlayerLeft = buildSpriteProtocolActorSprite(
-        sim.playerSprite,
-        PlayerColors[i],
-        true,
         true
       )
       selectedGhostRight = buildSpriteProtocolActorSprite(
@@ -1538,22 +1689,6 @@ proc buildSpriteProtocolInit(
       )
     result.addSpriteChanged(
       spriteDefs,
-      PlayerSpriteBase + i * 2,
-      sim.playerSprite.width + 2,
-      sim.playerSprite.height + 2,
-      playerRight,
-      "player " & playerColorName(i) & " right"
-    )
-    result.addSpriteChanged(
-      spriteDefs,
-      PlayerSpriteBase + i * 2 + 1,
-      sim.playerSprite.width + 2,
-      sim.playerSprite.height + 2,
-      playerLeft,
-      "player " & playerColorName(i) & " left"
-    )
-    result.addSpriteChanged(
-      spriteDefs,
       GhostSpriteBase + i * 2,
       sim.ghostSprite.width + 2,
       sim.ghostSprite.height + 2,
@@ -1567,22 +1702,6 @@ proc buildSpriteProtocolInit(
       sim.ghostSprite.height + 2,
       ghostLeft,
       "ghost " & playerColorName(i) & " left"
-    )
-    result.addSpriteChanged(
-      spriteDefs,
-      SelectedPlayerSpriteBase + i * 2,
-      sim.playerSprite.width + 2,
-      sim.playerSprite.height + 2,
-      selectedPlayerRight,
-      "selected player " & playerColorName(i) & " right"
-    )
-    result.addSpriteChanged(
-      spriteDefs,
-      SelectedPlayerSpriteBase + i * 2 + 1,
-      sim.playerSprite.width + 2,
-      sim.playerSprite.height + 2,
-      selectedPlayerLeft,
-      "selected player " & playerColorName(i) & " left"
     )
     result.addSpriteChanged(
       spriteDefs,
@@ -1677,17 +1796,37 @@ proc buildSpriteProtocolPlayerInit(
   )
   sim.addSpriteProtocolInterstitialSprites(spriteDefs, result)
   for i in 0 ..< PlayerColors.len:
+    for variant in 0 ..< CrewSpriteVariants:
+      let
+        crew = sim.crewSprites[variant]
+        playerRight = buildCrewProtocolActorSprite(
+          crew,
+          PlayerColors[i],
+          false
+        )
+        playerLeft = buildCrewProtocolActorSprite(
+          crew,
+          PlayerColors[i],
+          true
+        )
+      result.addSpriteChanged(
+        spriteDefs,
+        crewPlayerSpriteId(i, variant, false),
+        crew.width + 2,
+        crew.height + 2,
+        playerRight,
+        "player " & playerColorName(i) & " right"
+      )
+      result.addSpriteChanged(
+        spriteDefs,
+        crewPlayerSpriteId(i, variant, true),
+        crew.width + 2,
+        crew.height + 2,
+        playerLeft,
+        "player " & playerColorName(i) & " left"
+      )
+
     let
-      playerRight = buildSpriteProtocolActorSprite(
-        sim.playerSprite,
-        PlayerColors[i],
-        false
-      )
-      playerLeft = buildSpriteProtocolActorSprite(
-        sim.playerSprite,
-        PlayerColors[i],
-        true
-      )
       ghostRight = buildSpriteProtocolActorSprite(
         sim.ghostSprite,
         PlayerColors[i],
@@ -1702,22 +1841,6 @@ proc buildSpriteProtocolPlayerInit(
         sim.bodySprite,
         PlayerColors[i]
       )
-    result.addSpriteChanged(
-      spriteDefs,
-      PlayerSpriteBase + i * 2,
-      sim.playerSprite.width + 2,
-      sim.playerSprite.height + 2,
-      playerRight,
-      "player " & playerColorName(i) & " right"
-    )
-    result.addSpriteChanged(
-      spriteDefs,
-      PlayerSpriteBase + i * 2 + 1,
-      sim.playerSprite.width + 2,
-      sim.playerSprite.height + 2,
-      playerLeft,
-      "player " & playerColorName(i) & " left"
-    )
     result.addSpriteChanged(
       spriteDefs,
       GhostSpriteBase + i * 2,
@@ -2036,9 +2159,9 @@ proc spriteActorSpriteId(player: Player, selectedJoinOrder: int): int =
     side = if player.flipH: 1 else: 0
     selected = player.joinOrder == selectedJoinOrder
   if player.alive and selected:
-    SelectedPlayerSpriteBase + colorIndex * 2 + side
+    selectedCrewPlayerSpriteId(colorIndex, player.joinOrder, player.flipH)
   elif player.alive:
-    PlayerSpriteBase + colorIndex * 2 + side
+    crewPlayerSpriteId(colorIndex, player.joinOrder, player.flipH)
   elif selected:
     SelectedGhostSpriteBase + colorIndex * 2 + side
   else:
@@ -2053,11 +2176,12 @@ proc selectSpritePlayer(
   result = -1
   var bestY = low(int)
   for player in sim.players:
+    let crew = sim.crewSpriteForSlot(player.joinOrder)
     let
       x = player.spritePlayerX()
       y = player.spritePlayerY()
-      w = sim.playerSprite.width + 2
-      h = sim.playerSprite.height + 2
+      w = crew.width + 2
+      h = crew.height + 2
     if mouseX >= x and mouseX < x + w and
         mouseY >= y and mouseY < y + h and
         player.y >= bestY:
@@ -2414,9 +2538,10 @@ proc buildSpriteProtocolPlayerUpdates*(
       SpritePlayerRemainingSpriteId
     )
 
-  for objectId in state.objectIds:
-    if objectId notin currentIds:
-      result.addDeleteObject(objectId)
+  if not state.isNil:
+    for objectId in state.objectIds:
+      if objectId notin currentIds:
+        result.addDeleteObject(objectId)
   nextState.objectIds = currentIds
 
 proc replayCommandAt(layer, x, y: int): char =
@@ -2731,6 +2856,7 @@ proc buildSpriteProtocolUpdates*(
 
   for playerIndex in 0 ..< sim.players.len:
     let player = sim.players[playerIndex]
+    let crew = sim.crewSpriteForSlot(player.joinOrder)
     let objectId = player.spriteObjectId()
     currentIds.add(objectId)
     result.addObject(
@@ -2746,7 +2872,7 @@ proc buildSpriteProtocolUpdates*(
         barObjectId = player.spriteImposterBarObjectId()
         barSpriteId = player.spriteImposterBarSpriteId()
         barX = player.spritePlayerX() +
-          (sim.playerSprite.width + 2 - ImposterBarWidth) div 2
+          (crew.width + 2 - ImposterBarWidth) div 2
         barY = player.spritePlayerY() - ImposterBarYOffset
       currentIds.add(barObjectId)
       result.addSprite(
@@ -2777,7 +2903,7 @@ proc buildSpriteProtocolUpdates*(
         labelSpriteId = player.spritePlayerNameSpriteId()
         labelObjectId = player.spritePlayerNameObjectId()
         labelX = player.spritePlayerX() +
-          (sim.playerSprite.width + 2 - label.width) div 2
+          (crew.width + 2 - label.width) div 2
         labelY = player.spritePlayerY() - ImposterBarYOffset -
           label.height - 1
       currentIds.add(labelObjectId)
