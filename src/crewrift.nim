@@ -16,27 +16,43 @@ proc cogamePath(value, source: string): string =
       quit(1)
     return
   if "://" in value:
-    echo "ERROR: unsupported URI from " & source & ": " & value
-    quit(1)
+    return ""
   result = value
+
+proc isHttpUri(uri: string): bool =
+  uri.startsWith("http://") or uri.startsWith("https://")
 
 when isMainModule:
   let
     address = getEnv("COGAME_HOST", DefaultHost)
     port = parseInt(getEnv("COGAME_PORT", $DefaultPort))
-    configPath = cogamePath(getEnv("COGAME_CONFIG_URI"), "COGAME_CONFIG_URI")
-    saveReplayPath = cogamePath(getEnv("COGAME_SAVE_REPLAY_URI"), "COGAME_SAVE_REPLAY_URI")
-    loadReplayPath = cogamePath(getEnv("COGAME_LOAD_REPLAY_URI"), "COGAME_LOAD_REPLAY_URI")
-    saveScoresPath = cogamePath(getEnv("COGAME_RESULTS_URI"), "COGAME_RESULTS_URI")
+    configUri = getEnv("COGAME_CONFIG_URI")
+    configPath = cogamePath(configUri, "COGAME_CONFIG_URI")
+    saveReplayUri = getEnv("COGAME_SAVE_REPLAY_URI")
+    saveScoresUri = getEnv("COGAME_RESULTS_URI")
+    loadReplayUri = getEnv("COGAME_LOAD_REPLAY_URI")
+    localReplayPath =
+      if isHttpUri(saveReplayUri): "/tmp/crewrift_replay.bitreplay"
+      else: cogamePath(saveReplayUri, "COGAME_SAVE_REPLAY_URI")
+    localScoresPath =
+      if isHttpUri(saveScoresUri): "/tmp/crewrift_scores.json"
+      else: cogamePath(saveScoresUri, "COGAME_RESULTS_URI")
+    loadReplayPath = cogamePath(loadReplayUri, "COGAME_LOAD_REPLAY_URI")
     replayServerMode = getEnv("COGAME_REPLAY_SERVER") == "1"
     replayDownloadUrl = getEnv("REPLAY_DOWNLOAD_URL")
 
   var config = defaultGameConfig()
   if configPath.len > 0:
     config.update(readFile(configPath))
+  elif isHttpUri(configUri):
+    let pool = newCurlPool(1)
+    let resp = pool.get(configUri)
+    if resp.code == 200:
+      config.update(resp.body)
+    else:
+      echo "ERROR: config download failed: ", resp.code
+      quit(1)
   echo "Using map file: " & config.mapPath
-  if configPath.len > 0:
-    echo "Using config file: " & configPath
 
   var actualLoadReplayPath = loadReplayPath
   if replayDownloadUrl.len > 0 and actualLoadReplayPath.len == 0 and
@@ -51,20 +67,15 @@ when isMainModule:
     writeFile(actualLoadReplayPath, resp.body)
     echo "Replay downloaded: ", resp.body.len, " bytes"
 
-  if actualLoadReplayPath.len > 0:
-    echo "Using replay load file: " & actualLoadReplayPath
-  if saveReplayPath.len > 0:
-    echo "Using replay save file: " & saveReplayPath
-  if saveScoresPath.len > 0:
-    echo "Using results save file: " & saveScoresPath
-
   echo "starting crewrift on ", address, ":", port
   runServerLoop(
     address,
     port,
     config,
-    saveReplayPath,
+    localReplayPath,
     actualLoadReplayPath,
-    saveScoresPath,
-    replayServerMode
+    localScoresPath,
+    replayServerMode,
+    saveReplayUri,
+    saveScoresUri
   )

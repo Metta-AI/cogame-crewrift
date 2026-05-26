@@ -620,33 +620,21 @@ proc buildRewardPacket(sim: SimServer): string {.measure.} =
 
 let uploadPool = newCurlPool(1)
 
-proc uploadReplayFiles(replayPath, scoresPath: string) =
-  ## Uploads replay and scores files to games_server if configured.
-  let
-    uploadUrl = getEnv("REPLAY_UPLOAD_URL")
-    uploadToken = getEnv("REPLAY_UPLOAD_TOKEN")
-  if uploadUrl.len == 0 or uploadToken.len == 0:
-    return
-  let headers = @[
-    ("Authorization", "Bearer " & uploadToken),
-    ("Content-Type", "application/octet-stream"),
-  ]
-  if replayPath.len > 0 and fileExists(replayPath):
-    let resp = uploadPool.post(uploadUrl, headers, readFile(replayPath))
-    if resp.code != 200:
-      echo "ERROR: replay upload failed: ", resp.code, " ", resp.body
-      return
-    echo "Replay uploaded: ", replayPath
-  if scoresPath.len > 0 and fileExists(scoresPath):
-    let scoreHeaders = @[
-      ("Authorization", "Bearer " & uploadToken),
-      ("Content-Type", "application/json"),
-    ]
-    let resp = uploadPool.post(uploadUrl & "/scores", scoreHeaders, readFile(scoresPath))
-    if resp.code != 200:
-      echo "ERROR: scores upload failed: ", resp.code, " ", resp.body
-      return
-    echo "Scores uploaded: ", scoresPath
+proc writeData(uri, data: string, contentType = "application/octet-stream") =
+  ## Writes data to a URI. Supports file:// and http(s):// (PUT).
+  if uri.startsWith("http://") or uri.startsWith("https://"):
+    let headers = @[("Content-Type", contentType)]
+    let resp = uploadPool.put(uri, headers, data)
+    if resp.code < 200 or resp.code >= 300:
+      echo "ERROR: upload to ", uri, " failed: ", resp.code
+    else:
+      echo "Uploaded: ", data.len, " bytes -> ", uri
+  elif uri.len > 0:
+    var path = uri
+    if path.startsWith("file://"):
+      path = path[7 .. ^1]
+    writeFile(path, data)
+    echo "Written: ", path, " (", data.len, " bytes)"
 
 proc runServerLoop*(
   host = DefaultHost,
@@ -655,7 +643,9 @@ proc runServerLoop*(
   saveReplayPath = "",
   loadReplayPath = "",
   saveScoresPath = "",
-  replayServerMode = false
+  replayServerMode = false,
+  saveReplayUri = "",
+  saveScoresUri = ""
 ) =
   initAppState()
   if saveReplayPath.len > 0 and loadReplayPath.len > 0:
@@ -1098,11 +1088,15 @@ proc runServerLoop*(
       if saveReplayPath.len > 0 and fileExists(saveReplayPath):
         echo "Replay written: ", saveReplayPath,
           " (", getFileSize(saveReplayPath), " bytes)"
-      if saveScoresPath.len > 0:
+        if saveReplayUri.len > 0 and saveReplayUri != saveReplayPath:
+          writeData(saveReplayUri, readFile(saveReplayPath))
+      if saveScoresUri.len > 0:
+        let scoresJson = sim.playerResultsJson() & "\n"
+        writeData(saveScoresUri, scoresJson, "application/json")
+      elif saveScoresPath.len > 0:
         writeFile(saveScoresPath, sim.playerResultsJson() & "\n")
         echo "Scores written: ", saveScoresPath,
           " (", getFileSize(saveScoresPath), " bytes)"
-      uploadReplayFiles(saveReplayPath, saveScoresPath)
       httpServer.close()
       joinThread(serverThread)
       break
