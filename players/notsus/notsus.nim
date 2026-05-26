@@ -12,7 +12,7 @@ when not defined(italkalotLibrary):
     import windy, scales
     import silky except measure
 import std/[algorithm, exitprocs, heapqueue, monotimes, options, os,
-  parseopt, random, strutils, times]
+  random, strutils, times]
 
 const
   PlayerScreenX = ScreenWidth div 2
@@ -5646,50 +5646,17 @@ when not defined(italkalotLibrary):
           sleep(250)
 
 when isMainModule and not defined(italkalotLibrary):
-  var
+  let
+    url = getEnv("COWORLD_PLAYER_WS_URL")
     address = DefaultHost
     port = PlayerDefaultPort
     gui = false
     name = ""
     mapPath = ""
-    url = getEnv("COWORLD_PLAYER_WS_URL")
     token = ""
     slot = -1
     exitOnDisconnect = url.len > 0
     protocolMode = WireSprite
-  for kind, key, val in getopt():
-    case kind
-    of cmdLongOption:
-      case key
-      of "address":
-        address = val
-      of "port":
-        port = parseInt(val)
-      of "gui":
-        gui = true
-      of "name":
-        name = val
-      of "token":
-        token = val
-      of "slot":
-        slot = parseInt(val)
-      of "map":
-        mapPath = val
-      of "url":
-        url = val
-        exitOnDisconnect = true
-      of "protocol":
-        protocolMode = parseProtocolMode(val)
-      of "bitstream":
-        protocolMode = WireBitstream
-      of "sprite":
-        protocolMode = WireSprite
-      else:
-        discard
-    else:
-      discard
-  if mapPath.len > 0 and not mapPath.isAbsolute():
-    mapPath = absolutePath(mapPath)
   let target =
     if url.len > 0: url
     else: "ws://" & address & ":" & $port
