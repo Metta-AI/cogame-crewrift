@@ -619,19 +619,12 @@ proc writeData(
   uri,
   data,
   contentType,
-  source,
-  methodEnv: string
+  source: string
 ) =
   ## Writes data to a URI. Supports file:// and http(s):// (PUT).
   if uri.len == 0:
     return
-  writeCogameUri(
-    uri,
-    data,
-    contentType,
-    source,
-    cogameHttpMethodForUri(uri, methodEnv)
-  )
+  writeCogameUri(uri, data, contentType, source)
   echo "Written: ", data.len, " bytes -> ", uri
 
 proc runServerLoop*(
@@ -1091,8 +1084,7 @@ proc runServerLoop*(
             saveReplayUri,
             readFile(saveReplayPath),
             "application/octet-stream",
-            CogameSaveReplayUriEnv,
-            CogameSaveReplayMethodEnv
+            CogameSaveReplayUriEnv
           )
       if saveScoresUri.len > 0:
         let scoresJson = sim.playerResultsJson() & "\n"
@@ -1100,8 +1092,7 @@ proc runServerLoop*(
           saveScoresUri,
           scoresJson,
           "application/json",
-          CogameResultsUriEnv,
-          CogameResultsMethodEnv
+          CogameResultsUriEnv
         )
       elif saveScoresPath.len > 0:
         writeFile(saveScoresPath, sim.playerResultsJson() & "\n")
