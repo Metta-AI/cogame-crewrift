@@ -1,6 +1,6 @@
 import std/[strutils, times]
 import zippy
-import common/protocol, sim
+import bitworld/protocol, sim
 
 type
   ReplayError* = object of CatchableError
