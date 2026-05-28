@@ -121,7 +121,9 @@ suite "player slots":
 
     check config.slots[0].name == ""
     check config.playerJoinAllowed("notsus", 0, "secret")
-    check config.playerJoinAllowed("notsus", 0, "")
+    check not config.playerJoinAllowed("notsus", 0, "")
+    check not config.playerJoinAllowed("notsus", 0, "bad")
+    check not config.playerJoinAllowed("notsus", -1, "bad")
     check config.playerJoinAllowed("browser", -1, "")
     check not config.playerJoinAllowed("notsus", MaxPlayers, "secret")
     check config.configuredPlayerName(0, "secret") == ""

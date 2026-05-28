@@ -1654,10 +1654,23 @@ proc slotAuthMatches(
   let slot = config.slotConfig(slotIndex)
   if slot.name.len > 0 and address != slot.name:
     return false
-  if slot.token.len > 0 and token != slot.token and
-      (config.closedRoster or slot.name.len > 0):
+  if slot.token.len > 0 and token != slot.token:
     return false
   true
+
+proc hasConfiguredToken(config: GameConfig, token: string): bool =
+  ## Returns true when a token matches any configured slot.
+  for slot in config.slots:
+    if slot.token.len > 0 and slot.token == token:
+      return true
+  false
+
+proc hasConfiguredTokens(config: GameConfig): bool =
+  ## Returns true when any slot has an auth token.
+  for slot in config.slots:
+    if slot.token.len > 0:
+      return true
+  false
 
 proc validatePlayerSlot(
   config: GameConfig,
@@ -1672,8 +1685,7 @@ proc validatePlayerSlot(
       CrewriftError,
       "Player name does not match configured slot " & $slotIndex & "."
     )
-  if slot.token.len > 0 and token != slot.token and
-      (config.closedRoster or slot.name.len > 0):
+  if slot.token.len > 0 and token != slot.token:
     raise newException(
       CrewriftError,
       "Player token does not match configured slot " & $slotIndex & "."
@@ -1701,6 +1713,9 @@ proc playerJoinAllowed*(
 ): bool =
   ## Returns whether a player websocket request can pass configured slot auth.
   if requestedSlot >= config.playerSlotLimit():
+    return false
+  if token.len > 0 and config.hasConfiguredTokens() and
+      not config.hasConfiguredToken(token):
     return false
   if requestedSlot >= 0:
     return config.slotAuthMatches(requestedSlot, address, token)
@@ -1802,6 +1817,9 @@ proc resolvePlayerSlot*(
       CrewriftError,
       "Player slot must be between 0 and 15."
     )
+  if token.len > 0 and sim.config.hasConfiguredTokens() and
+      not sim.config.hasConfiguredToken(token):
+    raise newException(CrewriftError, "Player token is not configured.")
   if requestedSlot >= 0:
     if requestedSlot >= sim.config.playerSlotLimit():
       raise newException(CrewriftError, "Player slot is outside configured roster.")

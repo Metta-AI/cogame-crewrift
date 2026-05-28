@@ -18,6 +18,9 @@ type
 
 const
   TransparentColorIndex* = 255'u8
+  EmbeddedNumbersPng = staticRead("../../../data/numbers.png")
+  EmbeddedLettersPng = staticRead("../../../data/letters.png")
+  EmbeddedTransportPng = staticRead("../../../data/transport.png")
 
 proc spriteIndex*(sprite: Sprite, x, y: int): int =
   y * sprite.width + x
@@ -60,10 +63,11 @@ proc sliceSpriteStrip*(image: Image, spriteWidth, spriteHeight, count: int): seq
     result.add(sprite)
 
 proc loadDigitSprites*(path: string): array[10, Sprite] =
-  if not fileExists(path):
-    raise newException(IOError, "Missing digit sprite strip: " & path)
-
-  let image = readImage(path)
+  let image =
+    if fileExists(path):
+      readImage(path)
+    else:
+      decodeImage(EmbeddedNumbersPng)
   let digits = sliceSpriteStrip(image, 6, 6, 10)
   if digits.len != 10:
     raise newException(IOError, "Digit sprite strip must contain 10 digits: " & path)
@@ -72,9 +76,11 @@ proc loadDigitSprites*(path: string): array[10, Sprite] =
     result[i] = digits[i]
 
 proc loadLetterSprites*(path: string): seq[Sprite] =
-  if not fileExists(path):
-    raise newException(IOError, "Missing letter sprite strip: " & path)
-  let image = readImage(path)
+  let image =
+    if fileExists(path):
+      readImage(path)
+    else:
+      decodeImage(EmbeddedLettersPng)
   sliceSpriteStrip(image, 6, 6, image.width div 6)
 
 proc letterIndex*(ch: char): int =
@@ -89,9 +95,14 @@ proc letterIndex*(ch: char): int =
   else: return -1
 
 proc readRequiredSprite*(path: string): Sprite =
-  if not fileExists(path):
-    raise newException(IOError, "Missing sprite asset: " & path)
-  spriteFromImage(readImage(path))
+  let image =
+    if fileExists(path):
+      readImage(path)
+    elif path.extractFilename() == "transport.png":
+      decodeImage(EmbeddedTransportPng)
+    else:
+      raise newException(IOError, "Missing sprite asset: " & path)
+  spriteFromImage(image)
 
 proc initFramebuffer*(): Framebuffer =
   result.indices = newSeq[uint8](ScreenWidth * ScreenHeight)
