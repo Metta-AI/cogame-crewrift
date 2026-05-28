@@ -305,13 +305,31 @@ proc respondReplayRequestError(request: Request, status: int, body: string) =
   headers["Connection"] = "close"
   request.respond(status, headers, body)
 
-proc respondForbiddenPlayer(request: Request, reason: string) =
-  ## Rejects an invalid player join before upgrading to a WebSocket.
+proc respondForbiddenWebSocket(request: Request, reason: string) =
+  ## Rejects a forbidden websocket request before upgrading.
   var headers: HttpHeaders
   headers["Content-Type"] = "text/plain; charset=utf-8"
   headers["Cache-Control"] = "no-cache"
   headers["Connection"] = "close"
   request.respond(403, headers, reason & "\n")
+
+proc hasPlayerCredentialParams*(name, slot, token: string): bool =
+  ## Returns true when query fields identify a player connection.
+  name.strip().len > 0 or slot.strip().len > 0 or token.strip().len > 0
+
+proc hasPlayerCredentialParams(request: Request): bool =
+  ## Returns true when a websocket request carries player credentials.
+  hasPlayerCredentialParams(
+    request.queryParams.getOrDefault("name", ""),
+    request.queryParams.getOrDefault("slot", ""),
+    request.queryParams.getOrDefault("token", "")
+  )
+
+proc respondForbiddenViewer(request: Request) =
+  ## Rejects a viewer websocket request with player credentials.
+  request.respondForbiddenWebSocket(
+    "Viewer websocket cannot include player name, slot, or token."
+  )
 
 proc configuredPlayerJoinError(
   config: GameConfig,
@@ -369,7 +387,7 @@ proc httpHandler(request: Request) =
           token
         )
         if joinError.len > 0:
-          request.respondForbiddenPlayer(joinError)
+          request.respondForbiddenWebSocket(joinError)
           return
     if identity.identityIsKicked():
       request.respondKicked()
@@ -384,12 +402,18 @@ proc httpHandler(request: Request) =
     echo "player connected: ", identity
   elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
+    if request.hasPlayerCredentialParams():
+      request.respondForbiddenViewer()
+      return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
         appState.globalViewers[websocket] = initGlobalViewerState()
   elif request.path == ReplayWebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
+    if request.hasPlayerCredentialParams():
+      request.respondForbiddenViewer()
+      return
     let replayServerMode = replayServerModeEnabled()
     let replayRequest =
       if replayServerMode:
@@ -411,6 +435,9 @@ proc httpHandler(request: Request) =
           appState.pendingReplayUri = replayRequest.uri
   elif request.path == AdminWebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
+    if request.hasPlayerCredentialParams():
+      request.respondForbiddenViewer()
+      return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:

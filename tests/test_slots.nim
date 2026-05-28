@@ -129,6 +129,13 @@ suite "player slots":
     check config.configuredPlayerName(0, "secret") == ""
     check config.configuredPlayerName(-1, "secret") == ""
 
+  test "viewer routes reject player credential params":
+    check not hasPlayerCredentialParams("", "", "")
+    check hasPlayerCredentialParams("player1", "", "")
+    check hasPlayerCredentialParams("", "0", "")
+    check hasPlayerCredentialParams("", "", "secret")
+    check hasPlayerCredentialParams("  player1  ", "", "")
+
   test "closed rosters require restricted slots":
     var config = defaultGameConfig()
     config.minPlayers = 1
