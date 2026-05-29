@@ -151,15 +151,11 @@ proc pendingPlayerJoin(
     result.requestedSlot
   )
 
-proc removeWebSocketState(websocket: WebSocket): int =
-  ## Removes websocket-owned state and returns its former player index.
+proc removePlayerWebSocketState(websocket: WebSocket): int =
+  ## Removes player-owned websocket state and returns its former index.
   result = -1
-  if websocket in appState.globalViewers:
-    appState.globalViewers.del(websocket)
   if websocket in appState.playerViewers:
     appState.playerViewers.del(websocket)
-  if websocket in appState.rewardViewers:
-    appState.rewardViewers.del(websocket)
   if websocket in appState.playerIndices:
     result = appState.playerIndices[websocket]
     appState.playerIndices.del(websocket)
@@ -169,6 +165,63 @@ proc removeWebSocketState(websocket: WebSocket): int =
   appState.playerAddresses.del(websocket)
   appState.playerSlots.del(websocket)
   appState.playerTokens.del(websocket)
+
+proc addressIsKicked(address: string): bool =
+  ## Returns true when an address is blocked from this match.
+  let identity = address.rewardAddress()
+  address in appState.kickedIdentities or identity in appState.kickedIdentities
+
+proc registerPlayerWebSocket(
+  websocket: WebSocket,
+  identity: string,
+  slot: int,
+  token: string
+): bool =
+  ## Registers one websocket as a player connection.
+  appState.globalViewers.del(websocket)
+  appState.rewardViewers.del(websocket)
+  discard removePlayerWebSocketState(websocket)
+  if identity.addressIsKicked():
+    return false
+  appState.playerViewers[websocket] = initPlayerViewerState()
+  appState.playerAddresses[websocket] = identity
+  appState.playerSlots[websocket] = slot
+  appState.playerTokens[websocket] = token
+  appState.playerIndices[websocket] =
+    if appState.replayLoaded:
+      -1
+    else:
+      0x7fffffff
+  appState.inputMasks[websocket] = 0
+  appState.lastAppliedMasks[websocket] = 0
+  true
+
+proc registerGlobalWebSocket(websocket: WebSocket) =
+  ## Registers one websocket as a global viewer connection.
+  discard removePlayerWebSocketState(websocket)
+  appState.rewardViewers.del(websocket)
+  appState.globalViewers[websocket] = initGlobalViewerState()
+
+proc registerRewardWebSocket(websocket: WebSocket) =
+  ## Registers one websocket as a reward stream connection.
+  discard removePlayerWebSocketState(websocket)
+  appState.globalViewers.del(websocket)
+  appState.rewardViewers[websocket] = true
+
+proc isPlayerWebSocket(websocket: WebSocket): bool =
+  ## Returns true when a websocket is exclusively a player connection.
+  result =
+    websocket in appState.playerViewers and
+      websocket notin appState.globalViewers and
+      websocket notin appState.rewardViewers
+
+proc removeWebSocketState(websocket: WebSocket): int =
+  ## Removes websocket-owned state and returns its former player index.
+  if websocket in appState.globalViewers:
+    appState.globalViewers.del(websocket)
+  if websocket in appState.rewardViewers:
+    appState.rewardViewers.del(websocket)
+  result = removePlayerWebSocketState(websocket)
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   ## Removes a websocket and keeps live player indices consistent.
@@ -395,12 +448,13 @@ proc httpHandler(request: Request) =
       request.respondKicked()
       return
     let websocket = request.upgradeToWebSocket()
+    var accepted = false
     {.gcsafe.}:
       withLock appState.lock:
-        appState.playerViewers[websocket] = initPlayerViewerState()
-        appState.playerAddresses[websocket] = identity
-        appState.playerSlots[websocket] = slot
-        appState.playerTokens[websocket] = token
+        accepted = websocket.registerPlayerWebSocket(identity, slot, token)
+    if not accepted:
+      websocket.disconnectWebSocket()
+      return
     echo "player connected: ", identity
   elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
@@ -410,7 +464,7 @@ proc httpHandler(request: Request) =
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
-        appState.globalViewers[websocket] = initGlobalViewerState()
+        websocket.registerGlobalWebSocket()
   elif request.path == ReplayWebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
     if request.hasPlayerCredentialParams():
@@ -432,7 +486,7 @@ proc httpHandler(request: Request) =
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
-        appState.globalViewers[websocket] = initGlobalViewerState()
+        websocket.registerGlobalWebSocket()
         if replayServerMode and replayRequest.uri.len > 0:
           appState.pendingReplayUri = replayRequest.uri
   elif request.path == AdminWebSocketPath and request.httpMethod == "GET" and
@@ -443,13 +497,13 @@ proc httpHandler(request: Request) =
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
-        appState.globalViewers[websocket] = initGlobalViewerState()
+        websocket.registerGlobalWebSocket()
   elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
-        appState.rewardViewers[websocket] = true
+        websocket.registerRewardWebSocket()
   elif (request.path == ControlRestartPath or request.path == ControlKickPath) and
       request.httpMethod == "OPTIONS":
     request.respondControl(204, "")
@@ -517,27 +571,20 @@ proc websocketHandler(
     var closeKickedSocket = false
     {.gcsafe.}:
       withLock appState.lock:
-        if websocket notin appState.globalViewers and
-            websocket notin appState.rewardViewers:
-          let
-            address = appState.playerAddresses.getOrDefault(websocket, "")
-            identity = address.rewardAddress()
-            isKicked =
-              address in appState.kickedIdentities or
-                identity in appState.kickedIdentities
-          if isKicked:
-            appState.playerAddresses.del(websocket)
-            appState.playerSlots.del(websocket)
-            appState.playerTokens.del(websocket)
-            appState.inputMasks.del(websocket)
-            appState.lastAppliedMasks.del(websocket)
-            appState.chatMessages.del(websocket)
+        if websocket in appState.globalViewers or
+            websocket in appState.rewardViewers:
+          discard removePlayerWebSocketState(websocket)
+        elif websocket.isPlayerWebSocket():
+          let address = appState.playerAddresses.getOrDefault(websocket, "")
+          if address.addressIsKicked():
+            discard removePlayerWebSocketState(websocket)
             closeKickedSocket = true
-          elif appState.replayLoaded:
-            appState.playerIndices[websocket] = -1
-          else:
-            appState.playerIndices[websocket] = 0x7fffffff
-          if websocket in appState.playerIndices:
+          elif websocket notin appState.playerIndices:
+            appState.playerIndices[websocket] =
+              if appState.replayLoaded:
+                -1
+              else:
+                0x7fffffff
             appState.inputMasks[websocket] = 0
             appState.lastAppliedMasks[websocket] = 0
     if closeKickedSocket:
@@ -777,7 +824,8 @@ proc runServerLoop*(
         if not replayLoaded:
           var newSockets: seq[WebSocket] = @[]
           for websocket in appState.playerIndices.keys:
-            if appState.playerIndices[websocket] == 0x7fffffff:
+            if websocket.isPlayerWebSocket() and
+                appState.playerIndices[websocket] == 0x7fffffff:
               newSockets.add(websocket)
           var progressed = true
           while progressed:
@@ -839,12 +887,11 @@ proc runServerLoop*(
         if not replayLoaded:
           inputs = newSeq[InputState](sim.players.len)
         for websocket, playerIndex in appState.playerIndices.pairs:
+          if not websocket.isPlayerWebSocket():
+            continue
           sockets.add(websocket)
           playerIndices.add(playerIndex)
-          if websocket in appState.playerViewers:
-            playerViewerStates.add(appState.playerViewers[websocket])
-          else:
-            playerViewerStates.add(initPlayerViewerState())
+          playerViewerStates.add(appState.playerViewers[websocket])
           if replayLoaded:
             continue
           if playerIndex < 0 or playerIndex >= inputs.len:
@@ -899,7 +946,8 @@ proc runServerLoop*(
           appState.kickedIdentities.clear()
           var reconnectSockets: seq[WebSocket] = @[]
           for websocket in appState.playerIndices.keys:
-            reconnectSockets.add(websocket)
+            if websocket.isPlayerWebSocket():
+              reconnectSockets.add(websocket)
           for websocket in reconnectSockets:
             appState.playerIndices[websocket] = 0x7fffffff
           var progressed = true
@@ -1006,7 +1054,8 @@ proc runServerLoop*(
       {.gcsafe.}:
         withLock appState.lock:
           for websocket in appState.playerIndices.keys:
-            appState.playerIndices[websocket] = 0x7fffffff
+            if websocket.isPlayerWebSocket():
+              appState.playerIndices[websocket] = 0x7fffffff
           for websocket in appState.playerViewers.keys:
             appState.playerViewers[websocket] = initPlayerViewerState()
 
