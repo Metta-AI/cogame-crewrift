@@ -1,7 +1,8 @@
 # Play Crewrift Daily
 
-Instructions for building and submitting a Dockerized Coworld policy to the public **Crewrift Daily** league.
-Use `coworld` for v2 Observatory leagues, submissions, results, logs, and replays.
+Instructions for building and submitting a Dockerized Coworld policy to the
+public **Crewrift Daily** league. Use `coworld` for v2 Observatory leagues,
+submissions, results, logs, and replays.
 
 - open `https://softmax.com/observatory/v2`
 - choose **Leagues**
@@ -22,10 +23,12 @@ uv init --bare --name my-crewrift-player
 uv add "coworld[auth]"
 ```
 
-Add a player process that reads `COGAMES_ENGINE_WS_URL`, opens that websocket,
-reads Sprite v1 updates, and sends Sprite v1 input packets. The reference
-`notsus` player in this repository is a useful starting point for the protocol
-and navigation loop.
+Add a player process that reads the player websocket URL, opens that websocket,
+reads Sprite v1 updates, and sends Sprite v1 input packets. Current Coworld
+runners set both `COWORLD_PLAYER_WS_URL` and `COGAMES_ENGINE_WS_URL`; the
+source `notsus` player reads the compatibility name. The reference `notsus`
+player in this repository is a useful starting point for the protocol and
+navigation loop.
 
 ## Auth
 
@@ -52,51 +55,74 @@ uv run coworld leagues league_...
 
 ```bash
 uv run coworld download crewrift --output-dir ./coworld
-uv run python -m json.tool ./coworld/coworld_manifest.json | less
+uv run python -m json.tool ./coworld/<coworld-id>/coworld_manifest.json | less
 ```
 
-The download command writes `./coworld/coworld_manifest.json`, pulls the game and bundled baseline player images, and
-tags those images locally for `coworld play`.
+The download command prints the `cow_...` id and writes
+`./coworld/<coworld-id>/coworld_manifest.json`. It also pulls the game and
+bundled baseline player images, then tags those images locally for
+`coworld play`.
 
 Read the manifest before writing your player. The key contract is `game.protocols.player`: your player process must
-connect to `COGAMES_ENGINE_WS_URL`, speak that websocket protocol, play until the episode ends, and exit.
+connect to the runner-supplied player websocket URL, speak that websocket
+protocol, play until the episode ends, and exit.
 
-## 2. Run A Local Episode
+## 2. Run The Certification Fixture
 
-Start a live local episode with the bundled baseline player containers:
+Start the short certification fixture with the bundled baseline player
+containers:
 
 ```bash
-uv run coworld play ./coworld/coworld_manifest.json
+uv run coworld run-episode ./coworld/<coworld-id>/coworld_manifest.json --timeout-seconds 120
 ```
 
-This runs the manifest's default playable variant, starts the game container, starts the baseline player containers, and
-opens the global viewer in your browser. If the browser does not open, open the printed **Global client** URL manually.
+This is the quickest pre-flight check. It verifies that Docker can pull the
+game and baseline player images, start the local runner, and finish the short
+fixture.
+
+## 3. Watch A Local Episode
+
+Start the full named variant with the bundled baseline player containers:
+
+```bash
+uv run coworld play ./coworld/<coworld-id>/coworld_manifest.json --variant default
+```
+
+This starts the game container, starts the baseline player containers, and opens
+the global viewer in your browser. If the browser does not open, open the
+printed **Global client** URL manually.
 Stop the command with `Ctrl-C` when you are done watching, or let the episode finish if you want a replay file.
 
 When the episode finishes, the command prints a replay path. To reopen the completed episode:
 
 ```bash
-uv run coworld replay ./coworld/coworld_manifest.json <REPLAY_PATH>
+uv run coworld replay ./coworld/<coworld-id>/coworld_manifest.json <REPLAY_PATH>
 ```
 
 Open the printed **Replay client** URL to inspect the completed local episode.
 
-## 3. Build And Test
+## 4. Build And Test
 
 After your project has a Dockerfile and player process, build and test your image:
 
 ```bash
 docker build --platform=linux/amd64 -t crewrift-player:latest .
-uv run coworld play ./coworld/coworld_manifest.json crewrift-player:latest
+uv run coworld run-episode ./coworld/<coworld-id>/coworld_manifest.json crewrift-player:latest --timeout-seconds 120
+```
+
+For visual debugging, run the full variant with your image:
+
+```bash
+uv run coworld play ./coworld/<coworld-id>/coworld_manifest.json crewrift-player:latest --variant default
 ```
 
 If your image needs a custom command, test with that command:
 
 ```bash
-uv run coworld play ./coworld/coworld_manifest.json crewrift-player:latest --run python --run /app/player.py
+uv run coworld play ./coworld/<coworld-id>/coworld_manifest.json crewrift-player:latest --variant default --run python --run /app/player.py
 ```
 
-## 4. Upload And Submit
+## 5. Upload And Submit
 
 ```bash
 uv run coworld upload-policy crewrift-player:latest --name "$USER-crewrift-player"
@@ -116,8 +142,9 @@ uv run coworld rounds --league league_...
 
 - Use the league page for the current `league_...` id.
 - For command details, run `uv run coworld --help`.
-- `coworld play` runs a named manifest variant for local watching. `coworld run-episode` uses the short certification
-  fixture.
+- `coworld run-episode` uses the short certification fixture.
+- `coworld play --variant default` runs the full tournament-style variant for
+  local watching.
 - If `coworld play` says a `coworld/...:downloaded` image is missing, rerun
   `uv run coworld download crewrift --output-dir ./coworld` to refresh the local image tags.
 - Both `coworld run-episode` and `upload-policy` support optional `--run python --run /app/player.py` for custom

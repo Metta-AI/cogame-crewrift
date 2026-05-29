@@ -341,7 +341,7 @@
       "pages": [
         {
           "id": "rules.md",
-          "title": "rules.md",
+          "title": "Rules",
           "content": {
             "type": "uri",
             "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/docs/rules.md"
@@ -349,7 +349,7 @@
         },
         {
           "id": "play_crewrift.md",
-          "title": "play_crewrift.md",
+          "title": "Play Crewrift Daily",
           "content": {
             "type": "uri",
             "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/docs/play_crewrift.md"
@@ -357,7 +357,7 @@
         },
         {
           "id": "player",
-          "title": "player.md",
+          "title": "Build a Player",
           "content": {
             "type": "uri",
             "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/players/how_to_make_a_bot.md"
@@ -365,7 +365,7 @@
         },
         {
           "id": "submit",
-          "title": "submit.md",
+          "title": "Submit a Policy",
           "content": {
             "type": "uri",
             "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/players/how_to_submit_coworld_policy.md"
@@ -373,7 +373,7 @@
         },
         {
           "id": "optimizer",
-          "title": "optimizer.md",
+          "title": "Improve a Policy",
           "content": {
             "type": "uri",
             "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/players/SMART_BOT_GUIDE.md"

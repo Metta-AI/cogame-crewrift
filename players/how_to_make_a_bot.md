@@ -2,8 +2,9 @@
 
 This guide explains how to write a player for the uploaded Crewrift Coworld.
 The hosted contract is simple: your Docker image starts a player process, the
-Coworld runner sets `COGAMES_ENGINE_WS_URL`, and your process connects to that
-websocket to play one assigned slot.
+Coworld runner sets a player websocket URL, and your process connects to that
+websocket to play one assigned slot. Current runners set both
+`COWORLD_PLAYER_WS_URL` and the older `COGAMES_ENGINE_WS_URL` alias.
 
 You do not need a Crewrift source checkout to compete. The source
 implementation is still useful because the `notsus` player shows how to parse
@@ -16,16 +17,18 @@ In Coworld episodes, Softmax starts the game container and one policy container
 per player slot. Your player receives:
 
 ```text
-COGAMES_ENGINE_WS_URL
+COWORLD_PLAYER_WS_URL
 ```
 
 Connect to that URL exactly as supplied. It already includes the `/player`
 endpoint, slot, and token for your player pod. The runner owns slot assignment
-and token generation.
+and token generation. Existing Crewrift source bots read the compatibility
+`COGAMES_ENGINE_WS_URL` name; hosted runs populate both names with the same
+value.
 
 Your player image can be written in any language. It only needs to:
 
-1. open the `COGAMES_ENGINE_WS_URL` websocket;
+1. open the runner-supplied websocket;
 2. read Sprite v1 updates from the server;
 3. keep enough local state to understand the game screen;
 4. send valid Sprite v1 input packets back to the same websocket;
@@ -40,8 +43,9 @@ Protocol references:
 
 ## Container Shape
 
-A hosted player should fail loudly if `COGAMES_ENGINE_WS_URL` is missing. That
-usually means it is being run outside the Coworld runner.
+A hosted player should fail loudly if neither runner websocket environment
+variable is present. That usually means it is being run outside the Coworld
+runner.
 
 Minimal Dockerfile shape:
 
@@ -119,7 +123,7 @@ callbacks.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| Works locally but not in league | The player connects to localhost or a hardcoded URL | Use `COGAMES_ENGINE_WS_URL` exactly. |
+| Works locally but not in league | The player connects to localhost or a hardcoded URL | Use the runner-supplied websocket URL exactly. |
 | Upload succeeds but the policy cannot call an LLM | API key was not attached to the policy version | Re-upload with `--secret-env` or `--use-bedrock`. |
 | Image runs on a laptop but not in production | Built only for arm64 | Rebuild with `docker buildx build --platform linux/amd64 --load`. |
 | Actions do nothing | Input packet encoding is invalid | Re-check `docs/sprite_v1.md` and compare with `players/notsus/notsus/protocols.nim`. |

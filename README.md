@@ -6,7 +6,7 @@ blend in, use cooldown-limited kills, and survive the vote.
 
 Most players do not need this repository. The public path is:
 
-1. write a player process that connects to `COGAMES_ENGINE_WS_URL`;
+1. write a player process that connects to the runner-supplied websocket URL;
 2. package it as a Linux Docker image;
 3. upload it with `coworld upload-policy`;
 4. submit it with `coworld submit`.
@@ -43,23 +43,28 @@ In hosted Coworld episodes, Softmax runs the game container and each policy
 container separately. Each policy container receives:
 
 ```text
-COGAMES_ENGINE_WS_URL=ws://<game-service>:8080/player?slot=<slot>&token=<token>
+COWORLD_PLAYER_WS_URL=ws://<game-service>:8080/player?slot=<slot>&token=<token>
 ```
 
 Connect to that URL exactly as supplied. The runner owns slot assignment and
 token generation. Do not hardcode a slot, guess a token, or connect to a local
 Crewrift server in hosted play.
 
+The current Coworld runner sets `COWORLD_PLAYER_WS_URL` and the older
+`COGAMES_ENGINE_WS_URL` compatibility alias to the same value. The bundled
+`notsus` source bot reads `COGAMES_ENGINE_WS_URL`; new policies may read either
+one, but should use the URL exactly as supplied.
+
 The player websocket uses Sprite v1:
 
 - Player protocol:
-  <https://github.com/Metta-AI/crewrift/blob/master/docs/sprite_v1.md>
+  <https://github.com/Metta-AI/coworld-crewrift/blob/master/docs/sprite_v1.md>
 - Global/replay viewer protocol:
-  <https://github.com/Metta-AI/crewrift/blob/master/docs/sprite_v1.md>
+  <https://github.com/Metta-AI/coworld-crewrift/blob/master/docs/sprite_v1.md>
 
 A player can be written in any language as long as its container starts the
-player process, connects to `COGAMES_ENGINE_WS_URL`, reads sprite updates, and
-sends valid sprite input packets.
+player process, connects to the runner-supplied websocket URL, reads sprite
+updates, and sends valid sprite input packets.
 
 ## Playing And Submitting
 
@@ -102,7 +107,7 @@ players, but they are not required for uploaded Coworld play.
 From the game folder:
 
 ```sh
-cd /path/to/crewrift
+cd /path/to/coworld-crewrift
 nim r src/crewrift.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":8,"imposterCount":2,"tasksPerPlayer":8,"killCooldownTicks":900,"voteTimerTicks":6000}'
 ```
 
@@ -211,8 +216,7 @@ The clients connect to the game-owned websocket routes on the same host:
 ### Run Local AI Players
 
 Run the server in one shell, then run a bot from the repo root in another
-shell. The default source-level starter policy is `evidencebot_v2`
-(`players/evidencebot_v2.nim`). For a smaller baseline, use `nottoodumb`.
+shell. The bundled source-level baseline is `notsus`.
 
 ```sh
 nim r src/crewrift.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":1,"imposterCount":0,"tasksPerPlayer":1}'
@@ -220,7 +224,7 @@ nim r src/crewrift.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":1,"
 
 ```sh
 COGAMES_ENGINE_WS_URL='ws://localhost:2000/player?slot=0&token=' \
-nim r players/nottoodumb/nottoodumb.nim -- --name nottoodumb --slot 0
+nim r players/notsus/notsus.nim -- --name notsus
 ```
 
 ### Map Files
