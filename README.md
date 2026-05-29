@@ -182,11 +182,14 @@ Upload the certified Coworld with:
 coworld upload-coworld coworld_manifest.json
 ```
 
-For the full production release flow from Crewrift `master`, including local
-linux/amd64 image builds and Coworld certification/upload, run:
+Production Coworld releases are owned by the Metta repository's canonical
+`worlds/crewrift` entry. From a Metta checkout, point the build contexts at this
+Crewrift checkout and run:
 
 ```sh
-./upload.sh 0.1.22
+GAME_CONTEXT=/path/to/coworld-crewrift \
+PLAYER_CONTEXT=/path/to/coworld-crewrift \
+worlds/crewrift/upload.sh 0.1.22
 ```
 
 Crewrift serves hosted replay viewers from the game image itself; there is no
