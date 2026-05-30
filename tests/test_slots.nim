@@ -52,6 +52,19 @@ proc addExamplePlayers(sim: var SimServer, count: int) =
       "0xBADA55_" & $i
     )
 
+proc writeRunnerJoin(
+  writer: var ReplayWriter,
+  sim: var SimServer,
+  time: uint32,
+  slot: int,
+  token: string
+) =
+  ## Records one runner-style slot/token join after resolving the configured name.
+  let identity = sim.config.configuredPlayerName(slot, token)
+  let playerIndex = sim.addPlayer(identity, slot, token)
+  let player = sim.players[playerIndex]
+  writer.writeJoin(time, playerIndex, player.address, player.joinOrder, token)
+
 suite "player slots":
   test "config parses example slots and tokens":
     var config = defaultGameConfig()
@@ -224,6 +237,35 @@ suite "player slots":
     check compressedData.joins[1].name == "player2"
     check compressedData.joins[1].slot == 3
     check compressedData.joins[1].token == "0xBADA55"
+
+    removeFile(path)
+
+  test "runner-style slots record configured policy names in replay joins":
+    let path = getTempDir() / "crewrift_runner_slots_replay.bitreplay"
+    if fileExists(path):
+      removeFile(path)
+
+    var config = defaultGameConfig()
+    config.minPlayers = 2
+    config.update("""{"tokens":["crew-token","imp-token"],"slots":[
+      {"name":"crew-policy:v3","role":"crew"},
+      {"name":"imp-policy:v7","role":"imposter"}
+    ],"closedRoster":true}""")
+    var sim = initCrewriftForTest(config)
+    var writer = openReplayWriter(path, config.configJson())
+
+    writer.writeRunnerJoin(sim, 12'u32, 0, "crew-token")
+    writer.writeRunnerJoin(sim, 24'u32, 1, "imp-token")
+    writer.closeReplayWriter()
+
+    let data = parseReplayBytes(readFile(path))
+    check data.joins.len == 2
+    check data.joins[0].name == "crew-policy:v3"
+    check data.joins[0].slot == 0
+    check data.joins[0].token == "crew-token"
+    check data.joins[1].name == "imp-policy:v7"
+    check data.joins[1].slot == 1
+    check data.joins[1].token == "imp-token"
 
     removeFile(path)
 
