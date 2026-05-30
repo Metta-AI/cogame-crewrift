@@ -227,13 +227,16 @@ suite "player slots":
 
     removeFile(path)
 
-  test "replay hash mismatch keeps playback alive":
+  test "replay hash mismatch stops at recorded end":
     var replay = initReplayPlayer(ReplayData(
       gameName: GameName,
       gameVersion: GameVersion,
       configJson: "{}",
       joins: @[ReplayJoin(time: 0'u32, player: 0'u8, name: "player1", slot: -1, token: "")],
-      hashes: @[ReplayHash(tick: 1'u32, hash: 0'u64)]
+      hashes: @[
+        ReplayHash(tick: 1'u32, hash: 0'u64),
+        ReplayHash(tick: 3'u32, hash: 0'u64)
+      ]
     ))
     var sim = initCrewriftForTest(defaultGameConfig())
 
@@ -242,6 +245,14 @@ suite "player slots":
     check sim.tickCount == 1
     check replay.playing
     check replay.hashValidationFailed
+
+    replay.stepReplay(sim)
+    check sim.tickCount == 2
+    check replay.playing
+
+    replay.stepReplay(sim)
+    check sim.tickCount == 3
+    check not replay.playing
 
   test "automatic slots wait behind restricted slots":
     var config = defaultGameConfig()

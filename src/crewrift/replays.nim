@@ -141,6 +141,8 @@ proc replayInputs(
 proc checkReplayHash(replay: var ReplayPlayer, sim: SimServer) =
   ## Checks the recorded hash for the current tick.
   if replay.hashValidationFailed:
+    if sim.tickCount >= replay.replayMaxTick():
+      replay.playing = false
     return
   if replay.hashIndex >= replay.data.hashes.len:
     replay.playing = false
