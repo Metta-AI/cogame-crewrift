@@ -15,7 +15,8 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "tokens"
+        "tokens",
+        "players"
       ],
       "properties": {
         "tokens": {
@@ -28,14 +29,23 @@
             "minLength": 1
           }
         },
-        "player_names": {
-          "description": "One display name per player slot, indexed by slot.",
+        "players": {
+          "description": "One player display-name object per player slot, indexed by slot.",
           "type": "array",
           "minItems": 8,
           "maxItems": 8,
           "items": {
-            "type": "string",
-            "minLength": 1
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
           }
         },
         "slots": {
@@ -425,6 +435,16 @@
       "name": "Default",
       "description": "Eight-player Crewrift tournament episode using the default balanced game settings.",
       "game_config": {
+        "players": [
+          { "name": "Player1" },
+          { "name": "Player2" },
+          { "name": "Player3" },
+          { "name": "Player4" },
+          { "name": "Player5" },
+          { "name": "Player6" },
+          { "name": "Player7" },
+          { "name": "Player8" }
+        ],
         "seed": 679961,
         "minPlayers": 8,
         "imposterCount": 2,
@@ -472,6 +492,16 @@
       }
     ],
     "game_config": {
+      "players": [
+        { "name": "Player1" },
+        { "name": "Player2" },
+        { "name": "Player3" },
+        { "name": "Player4" },
+        { "name": "Player5" },
+        { "name": "Player6" },
+        { "name": "Player7" },
+        { "name": "Player8" }
+      ],
       "seed": 679961,
       "minPlayers": 8,
       "imposterCount": 2,

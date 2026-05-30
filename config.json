@@ -11,15 +11,15 @@
     "0xBADA55_6",
     "0xBADA55_7"
   ],
-  "player_names":[
-    "player1",
-    "player2",
-    "player3",
-    "player4",
-    "player5",
-    "player6",
-    "player7",
-    "player8"
+  "players":[
+    {"name":"player1"},
+    {"name":"player2"},
+    {"name":"player3"},
+    {"name":"player4"},
+    {"name":"player5"},
+    {"name":"player6"},
+    {"name":"player7"},
+    {"name":"player8"}
   ],
   "slots":[
     {"role":"crew","color":"red"},

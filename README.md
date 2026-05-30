@@ -248,8 +248,8 @@ nim r src/crewrift.nim --address:0.0.0.0 --port:2000 --config:'{"mapPath":"data/
 
 ### Slot Config For Source Tests
 
-The `tokens`, `player_names`, and `slots` arrays match by index, so `tokens[0]`
-and `player_names[0]` belong to `slots[0]`.
+The `tokens`, `players`, and `slots` arrays match by index, so `tokens[0]`
+and `players[0].name` belong to `slots[0]`.
 
 ```json
 {
@@ -265,15 +265,15 @@ and `player_names[0]` belong to `slots[0]`.
     "0xBADA55_6",
     "0xBADA55_7"
   ],
-  "player_names": [
-    "player1",
-    "player2",
-    "player3",
-    "player4",
-    "player5",
-    "player6",
-    "player7",
-    "player8"
+  "players": [
+    { "name": "player1" },
+    { "name": "player2" },
+    { "name": "player3" },
+    { "name": "player4" },
+    { "name": "player5" },
+    { "name": "player6" },
+    { "name": "player7" },
+    { "name": "player8" }
   ],
   "slots": [
     { "role": "crew", "color": "red" },

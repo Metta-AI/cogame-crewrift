@@ -459,7 +459,7 @@ suite "stats":
     config.tasksPerPlayer = 1
     config.roleRevealTicks = 0
     config.update("""{"tokens":["crew-token","imposter-token"],
-      "player_names":["crew","imposter"],
+      "players":[{"name":"crew"},{"name":"imposter"}],
       "slots":[
       {"token":"crew-token","role":"crew"},
       {"token":"imposter-token","role":"imposter"}
