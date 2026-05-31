@@ -56,7 +56,7 @@ proc initReplayPlayer*(data: ReplayData): ReplayPlayer =
   result.masks = @[]
   result.lastAppliedMasks = @[]
   result.playing = true
-  result.looping = false
+  result.looping = true
   result.speedIndex = 0
   result.hashValidationFailed = false
 

@@ -75,6 +75,12 @@ proc writeRunnerJoin(
   writer.writeJoin(time, playerIndex, player.address, player.joinOrder, token)
 
 suite "player slots":
+  test "replay player autoplays and loops by default":
+    let replay = initReplayPlayer(ReplayData())
+
+    check replay.playing
+    check replay.looping
+
   test "config parses example slots and tokens":
     var config = defaultGameConfig()
     config.update(ExampleSlotsJson)
